@@ -51,7 +51,8 @@ func interceptRequest(raw []byte, afterAuth bool) ([]byte, error) {
 	if profile == "" {
 		return terminatedPolicyResponse(http.StatusForbidden, "selected profile is unavailable for policy evaluation", "")
 	}
-	if !policyAllows(policy, profile) {
+	if !policyAllowsCandidateWithLegacy(policy, profile, "", globalState.legacyAlias(scope, profile)) {
+		globalState.recordRuntimeWarning("A request was denied because its selected profile is not allowed by the current policy. Manual assistance is required: refresh the provider catalog and update this key's rules.")
 		return terminatedPolicyResponse(http.StatusForbidden, "profile is not allowed for this API key", profile)
 	}
 	return okEnvelope(requestInterceptResponse{})
@@ -77,11 +78,13 @@ func pickProfile(raw []byte) ([]byte, error) {
 	eligible := make([]schedulerAuthCandidate, 0, len(req.Candidates))
 	for _, candidate := range req.Candidates {
 		candidate.ID = strings.TrimSpace(candidate.ID)
-		if candidate.ID != "" && policyAllowsCandidate(policy, candidate.ID, candidate.Provider) {
+		if candidate.ID != "" && policyAllowsSchedulerCandidate(policy, candidate) {
 			eligible = append(eligible, candidate)
+			globalState.rememberLegacyAlias(scope, candidate.ID, legacyAPIKeyProfileID(candidate))
 		}
 	}
 	if len(eligible) == 0 {
+		globalState.recordRuntimeWarning("A request was denied because no current profile matched this key's policy. Manual assistance is required: refresh the provider catalog and update this key's rules.")
 		return errorEnvelope("profile_access_denied", "no allowed upstream profile is available for this API key", http.StatusForbidden), nil
 	}
 	provider := req.Provider
@@ -167,6 +170,9 @@ func handleManagement(raw []byte) ([]byte, error) {
 
 func managementStatus() ([]byte, error) {
 	cfg, snapshot, source, updatedAt, hostSchema, lastError, revision := globalState.currentWithRevision()
+	globalState.mu.RLock()
+	runtimeWarning := globalState.runtimeWarning
+	globalState.mu.RUnlock()
 	return managementJSON(http.StatusOK, map[string]any{
 		"plugin":                  pluginID,
 		"version":                 pluginVersion,
@@ -176,6 +182,7 @@ func managementStatus() ([]byte, error) {
 		"identity_source":         "Metadata.caller_scope",
 		"unconfigured_key_action": "allow",
 		"last_error":              lastError,
+		"runtime_warning":         runtimeWarning,
 		"policy_count":            len(snapshot.ByCallerScope),
 		"revision":                revision,
 		"policy_file":             cfg.PolicyFile,

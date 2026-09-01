@@ -13,6 +13,10 @@ Profiles include both OAuth credentials and API-key-backed providers. Policies s
 - An empty `allow_profiles` list allows every profile not matched by `deny_profiles`.
 - `*` matches any number of characters and `?` matches one character.
 - The scheduler chooses only among allowed candidates and round-robins eligible candidates.
+- Legacy Gemini, Gemini Interactions, Claude, Codex, and xAI API-key profile IDs from CPA's
+  pre-v7.2.146 format are matched against current candidates using transient attributes. This
+  preserves existing allow/deny rules across CPA's ID-format change without persisting credentials
+  or silently allowing a different key.
 - The after-auth interceptor verifies the selected auth ID before an upstream executor receives the request.
 - Missing identity, missing selected-auth metadata, or invalid policy state fails closed whenever policies exist.
 

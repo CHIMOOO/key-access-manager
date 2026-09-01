@@ -60,12 +60,14 @@ type state struct {
 	hostSchema     uint32
 	hasValidPolicy bool
 	lastError      string
+	runtimeWarning string
 	revision       uint64
 	pickCursor     map[string]uint64
+	legacyAliases  map[string]map[string]string
 }
 
 var (
-	globalState = state{snapshot: failClosedSnapshot(), pickCursor: make(map[string]uint64)}
+	globalState = state{snapshot: failClosedSnapshot(), pickCursor: make(map[string]uint64), legacyAliases: make(map[string]map[string]string)}
 	mutationMu  sync.Mutex
 )
 
@@ -83,8 +85,10 @@ func (s *state) clear() {
 	s.hostSchema = 0
 	s.hasValidPolicy = false
 	s.lastError = ""
+	s.runtimeWarning = ""
 	s.revision = 0
 	s.pickCursor = make(map[string]uint64)
+	s.legacyAliases = make(map[string]map[string]string)
 }
 
 func (s *state) current() (pluginConfig, policySnapshot, string, time.Time, uint32, string) {
@@ -108,13 +112,39 @@ func (s *state) replace(cfg pluginConfig, snapshot policySnapshot, source string
 	s.updatedAt = time.Now().UTC()
 	s.hasValidPolicy = true
 	s.lastError = ""
+	s.runtimeWarning = ""
 	s.revision++
+	s.legacyAliases = make(map[string]map[string]string)
 }
 
 func (s *state) policyRevision() uint64 {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.revision
+}
+
+func (s *state) rememberLegacyAlias(scope, current, legacy string) {
+	scope = strings.TrimSpace(scope)
+	current = strings.TrimSpace(current)
+	legacy = strings.TrimSpace(legacy)
+	if scope == "" || current == "" || legacy == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.legacyAliases == nil {
+		s.legacyAliases = make(map[string]map[string]string)
+	}
+	if s.legacyAliases[scope] == nil {
+		s.legacyAliases[scope] = make(map[string]string)
+	}
+	s.legacyAliases[scope][current] = legacy
+}
+
+func (s *state) legacyAlias(scope, current string) string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.legacyAliases[strings.TrimSpace(scope)][strings.TrimSpace(current)]
 }
 
 func (s *state) setHostSchema(schema uint32) {
@@ -127,6 +157,16 @@ func (s *state) recordPolicyError(cause error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.lastError = cause.Error()
+}
+
+func (s *state) recordRuntimeWarning(message string) {
+	message = strings.TrimSpace(message)
+	if message == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.runtimeWarning = message
 }
 
 func (s *state) failClosedOrPreserve(cfg pluginConfig, schema uint32, cause error) {
@@ -342,10 +382,30 @@ func policyAllows(policy runtimePolicy, profile string) bool {
 }
 
 func policyAllowsCandidate(policy runtimePolicy, profile, provider string) bool {
+	return policyAllowsCandidateWithLegacies(policy, profile, provider, nil)
+}
+
+func policyAllowsSchedulerCandidate(policy runtimePolicy, candidate schedulerAuthCandidate) bool {
+	return policyAllowsCandidateWithLegacies(policy, candidate.ID, candidate.Provider, []string{legacyAPIKeyProfileID(candidate)})
+}
+
+func policyAllowsCandidateWithLegacy(policy runtimePolicy, profile, provider, legacyProfile string) bool {
+	return policyAllowsCandidateWithLegacies(policy, profile, provider, []string{legacyProfile})
+}
+
+func policyAllowsCandidateWithLegacies(policy runtimePolicy, profile, provider string, legacyProfiles []string) bool {
 	profile = strings.TrimSpace(profile)
 	_ = provider
 	matches := func(pattern string) bool {
-		return wildcardMatch(pattern, profile)
+		if wildcardMatch(pattern, profile) {
+			return true
+		}
+		for _, legacyProfile := range legacyProfiles {
+			if legacyProfile != "" && wildcardMatch(pattern, strings.TrimSpace(legacyProfile)) {
+				return true
+			}
+		}
+		return false
 	}
 	for _, pattern := range policy.DenyProfiles {
 		if matches(pattern) {
@@ -361,6 +421,37 @@ func policyAllowsCandidate(policy runtimePolicy, profile, provider string) bool 
 		}
 	}
 	return false
+}
+
+// legacyAPIKeyProfileID reproduces the key+base-url ID format used before
+// CPA v7.2.146 for every built-in API-key profile whose identity inputs were
+// expanded in that release. Candidate credentials remain transient and are
+// never persisted or logged.
+func legacyAPIKeyProfileID(candidate schedulerAuthCandidate) string {
+	profile := strings.TrimSpace(candidate.ID)
+	separator := strings.LastIndex(profile, ":")
+	if separator <= 0 {
+		return ""
+	}
+	kind := profile[:separator]
+	switch kind {
+	case "gemini:apikey", "gemini-interactions:apikey", "claude:apikey", "codex:apikey", "xai:apikey":
+	default:
+		return ""
+	}
+	key := strings.TrimSpace(candidate.Attributes["api_key"])
+	base := strings.TrimSpace(candidate.Attributes["base_url"])
+	if key == "" && base == "" {
+		return ""
+	}
+	hasher := sha256.New()
+	hasher.Write([]byte(kind))
+	hasher.Write([]byte{0})
+	hasher.Write([]byte(key))
+	hasher.Write([]byte{0})
+	hasher.Write([]byte(base))
+	digest := hex.EncodeToString(hasher.Sum(nil))
+	return kind + ":" + digest[:12]
 }
 
 func (s *state) nextProfile(scope, provider, model string, candidates []schedulerAuthCandidate) string {

@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"os"
@@ -116,6 +118,94 @@ func TestSchedulerSelectsOnlyAllowedProfiles(t *testing.T) {
 		if !response.Handled || !want[response.AuthID] {
 			t.Fatalf("scheduler response = %#v", response)
 		}
+	}
+}
+
+func TestSchedulerAdoptsLegacyAPIKeyIDs(t *testing.T) {
+	for _, test := range []struct {
+		kind     string
+		provider string
+	}{
+		{kind: "gemini:apikey", provider: "gemini"},
+		{kind: "gemini-interactions:apikey", provider: "gemini-interactions"},
+		{kind: "claude:apikey", provider: "claude"},
+		{kind: "codex:apikey", provider: "codex"},
+		{kind: "xai:apikey", provider: "xai"},
+	} {
+		t.Run(test.kind, func(t *testing.T) {
+			candidate := schedulerAuthCandidate{
+				ID:       test.kind + ":current",
+				Provider: test.provider,
+				Attributes: map[string]string{
+					"api_key":  "same-key",
+					"base_url": "https://example.invalid",
+				},
+			}
+			h := sha256.New()
+			h.Write([]byte(test.kind))
+			for _, part := range []string{"same-key", "https://example.invalid"} {
+				h.Write([]byte{0})
+				h.Write([]byte(part))
+			}
+			legacy := test.kind + ":" + hex.EncodeToString(h.Sum(nil))[:12]
+			if got := legacyAPIKeyProfileID(candidate); got != legacy {
+				t.Fatalf("legacy ID = %q, want %q", got, legacy)
+			}
+			policy := runtimePolicy{AllowProfiles: []string{legacy}}
+			if !policyAllowsSchedulerCandidate(policy, candidate) {
+				t.Fatalf("legacy API-key ID %q did not allow current candidate", legacy)
+			}
+			policy.AllowProfiles = []string{test.kind + ":unrelated"}
+			if policyAllowsSchedulerCandidate(policy, candidate) {
+				t.Fatal("unrelated legacy API-key ID was incorrectly allowed")
+			}
+			policy.DenyProfiles = []string{legacy}
+			policy.AllowProfiles = []string{"*"}
+			if policyAllowsSchedulerCandidate(policy, candidate) {
+				t.Fatal("legacy deny rule did not override allow rule")
+			}
+		})
+	}
+	if got := legacyAPIKeyProfileID(schedulerAuthCandidate{
+		ID: "codex-account.json", Attributes: map[string]string{"api_key": "secret"},
+	}); got != "" {
+		t.Fatalf("OAuth/file profile received a fabricated legacy ID: %q", got)
+	}
+}
+
+func TestInterceptorAcceptsSchedulerMigratedAPIKeyID(t *testing.T) {
+	candidate := schedulerAuthCandidate{
+		ID:       "codex:apikey:current",
+		Provider: "codex",
+		Attributes: map[string]string{
+			"api_key":  "same-key",
+			"base_url": "https://example.invalid",
+		},
+	}
+	installTestPolicy(t, policyDocument{Version: 2, Policies: []policyConfig{{
+		CallerScope: scopeA, AllowProfiles: []string{legacyAPIKeyProfileID(candidate)},
+	}}})
+	request := schedulerPickRequest{
+		Provider:   "codex",
+		Model:      "test-model",
+		Options:    schedulerOptions{Metadata: map[string]any{"caller_scope": scopeA}},
+		Candidates: []schedulerAuthCandidate{candidate},
+	}
+	rawRequest, _ := json.Marshal(request)
+	rawResponse, err := pickProfile(rawRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var selected schedulerPickResponse
+	unwrapEnvelope(t, rawResponse, &selected)
+	if selected.AuthID != candidate.ID {
+		t.Fatalf("selected auth ID = %q, want %q", selected.AuthID, candidate.ID)
+	}
+	if response := callIntercept(t, requestInterceptRequest{Metadata: map[string]any{
+		"caller_scope":     scopeA,
+		"selected_auth_id": selected.AuthID,
+	}}); response.Terminate {
+		t.Fatalf("after-auth rejected scheduler-migrated profile: %#v", response)
 	}
 }
 

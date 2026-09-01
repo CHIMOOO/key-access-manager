@@ -139,6 +139,7 @@
     ["策略警告", "Policy warning"],
     ["未连接", "Disconnected"],
     ["插件运行正常", "Plugin is healthy"],
+    ["需要人工协助：最近一次请求没有匹配到当前允许的上游配置。请刷新上游配置目录并更新此 Key 的规则。", "Manual assistance required: the latest request matched no currently allowed provider. Refresh the provider catalog and update this key's rules."],
     ["保存修改", "Save changes"],
     ["已保存", "Saved"],
     ["正在保存", "Saving"],
@@ -817,7 +818,7 @@
 
   function syncHeader() {
     const healthy = state.status && !state.status.last_error;
-    const warning = state.status?.last_error;
+    const warning = state.status?.last_error || state.status?.runtime_warning;
     healthBadge.innerHTML = `<span class="status-dot ${warning ? "warning" : healthy ? "" : "error"}"></span><span>${escapeHTML(warning ? "策略警告" : healthy ? `Schema v${state.status.schema_version || 2}` : "未连接")}</span>`;
     healthBadge.title = warning ? state.status.last_error : "插件运行正常";
     saveButton.disabled = state.busy || state.profileBusy || !state.dirty;
@@ -933,6 +934,9 @@
     const statusWarning = state.status?.last_error
       ? `<div class="notice">${icons.warning}<span><strong>最近一次配置存在问题：</strong> ${escapeHTML(state.status.last_error)}。当前仍在使用最后一个有效策略。</span></div>`
       : "";
+    const runtimeWarning = state.status?.runtime_warning
+      ? `<div class="notice">${icons.warning}<span><strong>需要人工协助：</strong> ${escapeHTML(state.status.runtime_warning)}</span></div>`
+      : "";
     const staleWarning = staleCount
       ? `<div class="notice">${icons.warning}<span><strong>${staleCount} 条失效策略：</strong>这些 caller scope 不对应 CPA 当前 Key。保存时会原样保留，不会静默删除；请在确认旧 Key 已永久移除后通过策略文件处理。</span></div>`
       : "";
@@ -946,6 +950,7 @@
         </div>
       </header>
       ${statusWarning}
+      ${runtimeWarning}
       ${staleWarning}
       <section class="overview-grid" aria-label="权限统计">
         ${statCard("当前 CPA Key", state.keys.length, "只读同步")}
