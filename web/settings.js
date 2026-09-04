@@ -557,6 +557,10 @@
         counters.set(base, count + 1);
         return count ? `${base}-${count}` : base;
       };
+      const formatSortedHeaders = (headers) => {
+        if (!headers || typeof headers !== "object") return "";
+        return Object.keys(headers).sort().map((key) => `${key}\0${String(headers[key] ?? "")}`).join("\0") + (Object.keys(headers).length ? "\0" : "");
+      };
 
       for (const item of lists.get("files")) {
         const provider = String(item?.provider ?? item?.type ?? "").trim();
@@ -566,7 +570,7 @@
       const addSimple = async (field, kind, provider) => {
         for (const item of lists.get(field)) {
 		  if (!String(item?.["api-key"] || "").trim()) continue;
-          const id = await nextID(kind, item?.["api-key"], item?.["base-url"]);
+          const id = await nextID(kind, item?.["api-key"], item?.["base-url"], item?.["proxy-url"], item?.prefix, formatSortedHeaders(item?.headers));
           add(id, provider, `${provider} API provider`, "api");
         }
       };
