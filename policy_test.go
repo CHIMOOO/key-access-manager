@@ -252,27 +252,16 @@ func TestSuccessfulPolicyEnforcementClearsRuntimeWarning(t *testing.T) {
 		Provider: "gemini",
 		Options:  schedulerOptions{Metadata: map[string]any{"caller_scope": scopeA}},
 		Candidates: []schedulerAuthCandidate{{
-			ID: "gemini:oauth-denied", Provider: "gemini",
+			ID: "gemini:oauth-allowed", Provider: "gemini",
 		}},
 	}
+	globalState.recordRuntimeWarning(profileMatchWarning)
 	rawRequest, _ := json.Marshal(request)
 	if _, err := pickProfile(rawRequest); err != nil {
 		t.Fatal(err)
 	}
 	globalState.mu.RLock()
 	warning := globalState.runtimeWarning
-	globalState.mu.RUnlock()
-	if warning != profileMatchWarning {
-		t.Fatalf("runtime warning = %q, want %q", warning, profileMatchWarning)
-	}
-
-	request.Candidates[0].ID = "gemini:oauth-allowed"
-	rawRequest, _ = json.Marshal(request)
-	if _, err := pickProfile(rawRequest); err != nil {
-		t.Fatal(err)
-	}
-	globalState.mu.RLock()
-	warning = globalState.runtimeWarning
 	globalState.mu.RUnlock()
 	if warning != "" {
 		t.Fatalf("successful scheduler pick retained runtime warning %q", warning)
@@ -290,6 +279,33 @@ func TestSuccessfulPolicyEnforcementClearsRuntimeWarning(t *testing.T) {
 	globalState.mu.RUnlock()
 	if warning != "" {
 		t.Fatalf("successful after-auth enforcement retained runtime warning %q", warning)
+	}
+}
+
+func TestSchedulerTransientlyAdoptsRotatedProfileIDs(t *testing.T) {
+	installTestPolicy(t, policyDocument{Version: 2, Policies: []policyConfig{{
+		CallerScope: scopeA, AllowProfiles: []string{"gemini:apikey:old-id"},
+	}}})
+	request := schedulerPickRequest{
+		Provider:   "gemini",
+		Options:    schedulerOptions{Metadata: map[string]any{"caller_scope": scopeA}},
+		Candidates: []schedulerAuthCandidate{{ID: "gemini:apikey:new-id", Provider: "gemini"}},
+	}
+	rawRequest, _ := json.Marshal(request)
+	rawResponse, err := pickProfile(rawRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var selected schedulerPickResponse
+	unwrapEnvelope(t, rawResponse, &selected)
+	if !selected.Handled || selected.AuthID != "gemini:apikey:new-id" {
+		t.Fatalf("rotated profile was not adopted: %#v", selected)
+	}
+	allowed := callIntercept(t, requestInterceptRequest{Metadata: map[string]any{
+		"caller_scope": scopeA, "selected_auth_id": selected.AuthID,
+	}})
+	if allowed.Terminate {
+		t.Fatalf("transiently adopted profile was rejected after auth: %#v", allowed)
 	}
 }
 

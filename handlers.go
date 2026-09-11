@@ -53,7 +53,7 @@ func interceptRequest(raw []byte, afterAuth bool) ([]byte, error) {
 	if profile == "" {
 		return terminatedPolicyResponse(http.StatusForbidden, "selected profile is unavailable for policy evaluation", "")
 	}
-	if !policyAllowsCandidateWithLegacy(policy, profile, "", globalState.legacyAlias(scope, profile)) {
+	if !policyAllowsCandidateWithLegacy(policy, profile, "", globalState.legacyAlias(scope, profile)) && !globalState.isAutoAllowed(scope, profile) {
 		globalState.recordRuntimeWarning(selectedDeniedWarning)
 		return terminatedPolicyResponse(http.StatusForbidden, "profile is not allowed for this API key", profile)
 	}
@@ -84,6 +84,19 @@ func pickProfile(raw []byte) ([]byte, error) {
 		if candidate.ID != "" && policyAllowsSchedulerCandidate(policy, candidate) {
 			eligible = append(eligible, candidate)
 			globalState.rememberLegacyAlias(scope, candidate.ID, legacyAPIKeyProfileID(candidate))
+		}
+	}
+	if len(eligible) == 0 && len(policy.AllowProfiles) > 0 {
+		// CPA may rotate a profile ID while retaining the same provider. If the
+		// current tier has no allow-list match, adopt current non-denied profiles
+		// transiently so requests continue; the dashboard reconciler persists the
+		// new IDs after the operator reviews and saves the policy.
+		for _, candidate := range req.Candidates {
+			if candidate.ID == "" || !policyAllowsCandidateWithLegacies(runtimePolicy{DenyProfiles: policy.DenyProfiles}, candidate.ID, candidate.Provider, []string{legacyAPIKeyProfileID(candidate)}) {
+				continue
+			}
+			eligible = append(eligible, candidate)
+			globalState.rememberAutoAllowed(scope, candidate.ID)
 		}
 	}
 	if len(eligible) == 0 {

@@ -64,10 +64,11 @@ type state struct {
 	revision       uint64
 	pickCursor     map[string]uint64
 	legacyAliases  map[string]map[string]string
+	autoAllowed    map[string]map[string]struct{}
 }
 
 var (
-	globalState = state{snapshot: failClosedSnapshot(), pickCursor: make(map[string]uint64), legacyAliases: make(map[string]map[string]string)}
+	globalState = state{snapshot: failClosedSnapshot(), pickCursor: make(map[string]uint64), legacyAliases: make(map[string]map[string]string), autoAllowed: make(map[string]map[string]struct{})}
 	mutationMu  sync.Mutex
 )
 
@@ -89,6 +90,7 @@ func (s *state) clear() {
 	s.revision = 0
 	s.pickCursor = make(map[string]uint64)
 	s.legacyAliases = make(map[string]map[string]string)
+	s.autoAllowed = make(map[string]map[string]struct{})
 }
 
 func (s *state) current() (pluginConfig, policySnapshot, string, time.Time, uint32, string) {
@@ -115,6 +117,7 @@ func (s *state) replace(cfg pluginConfig, snapshot policySnapshot, source string
 	s.runtimeWarning = ""
 	s.revision++
 	s.legacyAliases = make(map[string]map[string]string)
+	s.autoAllowed = make(map[string]map[string]struct{})
 }
 
 func (s *state) policyRevision() uint64 {
@@ -145,6 +148,30 @@ func (s *state) legacyAlias(scope, current string) string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.legacyAliases[strings.TrimSpace(scope)][strings.TrimSpace(current)]
+}
+
+func (s *state) rememberAutoAllowed(scope, profile string) {
+	scope = strings.TrimSpace(scope)
+	profile = strings.TrimSpace(profile)
+	if scope == "" || profile == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.autoAllowed == nil {
+		s.autoAllowed = make(map[string]map[string]struct{})
+	}
+	if s.autoAllowed[scope] == nil {
+		s.autoAllowed[scope] = make(map[string]struct{})
+	}
+	s.autoAllowed[scope][profile] = struct{}{}
+}
+
+func (s *state) isAutoAllowed(scope, profile string) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	_, ok := s.autoAllowed[strings.TrimSpace(scope)][strings.TrimSpace(profile)]
+	return ok
 }
 
 func (s *state) setHostSchema(schema uint32) {
