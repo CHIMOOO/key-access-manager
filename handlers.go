@@ -20,6 +20,8 @@ const (
 	reloadPath            = "/v0/management/plugins/key-provider-access/reload"
 	initializeStoragePath = "/v0/management/plugins/key-provider-access/initialize-storage"
 	settingsResourcePath  = "/v0/resource/plugins/key-provider-access/settings"
+	profileMatchWarning   = "profile_match_failed"
+	selectedDeniedWarning = "selected_profile_denied"
 )
 
 func interceptRequest(raw []byte, afterAuth bool) ([]byte, error) {
@@ -52,9 +54,10 @@ func interceptRequest(raw []byte, afterAuth bool) ([]byte, error) {
 		return terminatedPolicyResponse(http.StatusForbidden, "selected profile is unavailable for policy evaluation", "")
 	}
 	if !policyAllowsCandidateWithLegacy(policy, profile, "", globalState.legacyAlias(scope, profile)) {
-		globalState.recordRuntimeWarning("A request was denied because its selected profile is not allowed by the current policy. Manual assistance is required: refresh the provider catalog and update this key's rules.")
+		globalState.recordRuntimeWarning(selectedDeniedWarning)
 		return terminatedPolicyResponse(http.StatusForbidden, "profile is not allowed for this API key", profile)
 	}
+	globalState.clearRuntimeWarning()
 	return okEnvelope(requestInterceptResponse{})
 }
 
@@ -84,9 +87,10 @@ func pickProfile(raw []byte) ([]byte, error) {
 		}
 	}
 	if len(eligible) == 0 {
-		globalState.recordRuntimeWarning("A request was denied because no current profile matched this key's policy. Manual assistance is required: refresh the provider catalog and update this key's rules.")
+		globalState.recordRuntimeWarning(profileMatchWarning)
 		return errorEnvelope("profile_access_denied", "no allowed upstream profile is available for this API key", http.StatusForbidden), nil
 	}
+	globalState.clearRuntimeWarning()
 	provider := req.Provider
 	if provider == "" {
 		provider = strings.Join(req.Providers, ",")

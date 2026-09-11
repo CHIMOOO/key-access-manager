@@ -169,6 +169,12 @@ func (s *state) recordRuntimeWarning(message string) {
 	s.runtimeWarning = message
 }
 
+func (s *state) clearRuntimeWarning() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.runtimeWarning = ""
+}
+
 func (s *state) failClosedOrPreserve(cfg pluginConfig, schema uint32, cause error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

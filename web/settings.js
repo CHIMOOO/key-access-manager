@@ -140,9 +140,12 @@
     ["重新加载", "Reload"],
     ["加载中", "Loading"],
     ["策略警告", "Policy warning"],
+    ["最近的策略拒绝：", "Recent policy denial:"],
     ["未连接", "Disconnected"],
     ["插件运行正常", "Plugin is healthy"],
-    ["需要人工协助：最近一次请求没有匹配到当前允许的上游配置。请刷新上游配置目录并更新此 Key 的规则。", "Manual assistance required: the latest request matched no currently allowed provider. Refresh the provider catalog and update this key's rules."],
+    ["最近一次被拒绝的请求没有匹配到该 Key 当前允许的上游配置。如果访问仍然失败，请刷新上游配置目录并检查该 Key 的规则。", "The most recent denied request matched no provider currently allowed for that key. If access is still failing, refresh the provider catalog and review that key's rules."],
+    ["最近一次被拒绝的请求所选上游配置不在该 Key 的允许范围内。如果访问仍然失败，请刷新上游配置目录并检查该 Key 的规则。", "The provider selected for the most recent denied request was not allowed for that key. If access is still failing, refresh the provider catalog and review that key's rules."],
+    ["检测到最近一次上游配置策略拒绝。如果访问仍然失败，请刷新上游配置目录并检查该 Key 的规则。", "A recent provider-policy denial was detected. If access is still failing, refresh the provider catalog and review that key's rules."],
     ["保存修改", "Save changes"],
     ["已保存", "Saved"],
     ["正在保存", "Saving"],
@@ -911,7 +914,7 @@
     const healthy = state.status && !state.status.last_error;
     const warning = state.status?.last_error || state.status?.runtime_warning;
     healthBadge.innerHTML = `<span class="status-dot ${warning ? "warning" : healthy ? "" : "error"}"></span><span>${escapeHTML(warning ? "策略警告" : healthy ? `Schema v${state.status.schema_version || 2}` : "未连接")}</span>`;
-    healthBadge.title = warning ? state.status.last_error : "插件运行正常";
+    healthBadge.title = warning ? (state.status.last_error || runtimeWarningText(state.status.runtime_warning)) : "插件运行正常";
     saveButton.disabled = state.busy || state.profileBusy || !state.dirty;
     reloadButton.disabled = state.busy || state.profileBusy || !state.status?.persistent_updates;
     reloadButton.title = state.status?.persistent_updates ? "从策略文件重载" : "未配置 policy_file，无法从文件重载";
@@ -1017,6 +1020,17 @@
     </table></div>`;
   }
 
+  function runtimeWarningText(code) {
+    switch (String(code || "").trim()) {
+      case "profile_match_failed":
+        return "最近一次被拒绝的请求没有匹配到该 Key 当前允许的上游配置。如果访问仍然失败，请刷新上游配置目录并检查该 Key 的规则。";
+      case "selected_profile_denied":
+        return "最近一次被拒绝的请求所选上游配置不在该 Key 的允许范围内。如果访问仍然失败，请刷新上游配置目录并检查该 Key 的规则。";
+      default:
+        return "检测到最近一次上游配置策略拒绝。如果访问仍然失败，请刷新上游配置目录并检查该 Key 的规则。";
+    }
+  }
+
   function renderOverview() {
     const configured = state.keys.filter(hasRules).length;
     const defaults = state.keys.length - configured;
@@ -1026,7 +1040,7 @@
       ? `<div class="notice">${icons.warning}<span><strong>最近一次配置存在问题：</strong> ${escapeHTML(state.status.last_error)}。当前仍在使用最后一个有效策略。</span></div>`
       : "";
     const runtimeWarning = state.status?.runtime_warning
-      ? `<div class="notice">${icons.warning}<span><strong>需要人工协助：</strong> ${escapeHTML(state.status.runtime_warning)}</span></div>`
+      ? `<div class="notice">${icons.warning}<span><strong>最近的策略拒绝：</strong> ${escapeHTML(runtimeWarningText(state.status.runtime_warning))}</span></div>`
       : "";
     const reconcileNotice = state.reconcileNotice
       ? `<div class="notice"><span>${escapeHTML(state.reconcileNotice)}</span></div>`

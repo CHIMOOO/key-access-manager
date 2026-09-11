@@ -244,6 +244,55 @@ func TestSchedulerUnconfiguredKeyFallsBackAndConfiguredKeyFailsClosed(t *testing
 	}
 }
 
+func TestSuccessfulPolicyEnforcementClearsRuntimeWarning(t *testing.T) {
+	installTestPolicy(t, policyDocument{Version: 2, Policies: []policyConfig{{
+		CallerScope: scopeA, AllowProfiles: []string{"gemini:oauth-allowed"},
+	}}})
+	request := schedulerPickRequest{
+		Provider: "gemini",
+		Options:  schedulerOptions{Metadata: map[string]any{"caller_scope": scopeA}},
+		Candidates: []schedulerAuthCandidate{{
+			ID: "gemini:oauth-denied", Provider: "gemini",
+		}},
+	}
+	rawRequest, _ := json.Marshal(request)
+	if _, err := pickProfile(rawRequest); err != nil {
+		t.Fatal(err)
+	}
+	globalState.mu.RLock()
+	warning := globalState.runtimeWarning
+	globalState.mu.RUnlock()
+	if warning != profileMatchWarning {
+		t.Fatalf("runtime warning = %q, want %q", warning, profileMatchWarning)
+	}
+
+	request.Candidates[0].ID = "gemini:oauth-allowed"
+	rawRequest, _ = json.Marshal(request)
+	if _, err := pickProfile(rawRequest); err != nil {
+		t.Fatal(err)
+	}
+	globalState.mu.RLock()
+	warning = globalState.runtimeWarning
+	globalState.mu.RUnlock()
+	if warning != "" {
+		t.Fatalf("successful scheduler pick retained runtime warning %q", warning)
+	}
+
+	globalState.recordRuntimeWarning(selectedDeniedWarning)
+	allowed := callIntercept(t, requestInterceptRequest{Metadata: map[string]any{
+		"caller_scope": scopeA, "selected_auth_id": "gemini:oauth-allowed",
+	}})
+	if allowed.Terminate {
+		t.Fatalf("allowed after-auth response = %#v", allowed)
+	}
+	globalState.mu.RLock()
+	warning = globalState.runtimeWarning
+	globalState.mu.RUnlock()
+	if warning != "" {
+		t.Fatalf("successful after-auth enforcement retained runtime warning %q", warning)
+	}
+}
+
 func TestInterceptorUsesOnlyCallerScopeMetadata(t *testing.T) {
 	installTestPolicy(t, policyDocument{Version: 2, Policies: []policyConfig{{
 		CallerScope: scopeA, AllowProfiles: []string{"gpt-*"},
