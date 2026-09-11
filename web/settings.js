@@ -22,6 +22,7 @@
   const CPAMC_AUTH_KEY = "cli-proxy-auth";
   const CPAMC_THEME_KEY = "cli-proxy-theme";
   const CPAMC_LANGUAGE_KEY = "cli-proxy-language";
+  const PROFILE_CACHE_KEY = "key-provider-access-profile-cache-v1";
   const SUPPORTED_LANGUAGES = new Set(["en", "zh-CN", "zh-TW", "ru"]);
   const OBFUSCATION_PREFIX = "enc::v1::";
   const OBFUSCATION_SALT = "cli-proxy-api-webui::secure-storage";
@@ -47,6 +48,8 @@
     profilesError: "",
     persistenceSetupError: "",
     stalePolicies: [],
+    profileCache: {},
+    reconcileNotice: "",
     revision: 0,
     selectedIndex: -1,
     dirty: false,
@@ -229,6 +232,19 @@
     return SUPPORTED_LANGUAGES.has(normalized) ? normalized : "en";
   }
 
+  function loadProfileCache() {
+    try {
+      const parsed = JSON.parse(localStorage.getItem(PROFILE_CACHE_KEY) || "{}");
+      return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+    } catch (_) {
+      return {};
+    }
+  }
+
+  function saveProfileCache() {
+    try { localStorage.setItem(PROFILE_CACHE_KEY, JSON.stringify(state.profileCache)); } catch (_) { /* cache is optional */ }
+  }
+
   function translateText(value) {
     let text = String(value ?? "");
     if (currentLanguage === "zh-CN") {
@@ -253,6 +269,13 @@
       .replace(/^点击将取消(.+)匹配$/, "Click to cancel the $1 match")
       .replace(/^当前匹配 (\d+) 个上游配置，并覆盖未来同前缀上游配置$/, "Matches $1 providers and future providers with the same prefix")
       .replace(/^已保留 (\d+) 条现有规则$/, "$1 existing rules retained")
+      .replace(/^(?:(\d+) 个失效上游配置已移入缓存；)?(?:(\d+) 个恢复的上游配置已恢复原规则；)?(?:(\d+) 个新上游配置已自动允许。)?请检查并保存策略。$/, (_, removed, restored, added) => {
+        const parts = [];
+        if (removed) parts.push(`${removed} stale profiles moved to cache`);
+        if (restored) parts.push(`${restored} returning profiles restored from cache`);
+        if (added) parts.push(`${added} new profiles automatically allowed`);
+        return `${parts.join("; ")}. Review and save the policy.`;
+      })
       .replace(/^已匹配 (\d+) \/ (\d+)$/, "Matched $1 / $2")
       .replace(/^(\d+) 条失效策略：$/, "$1 stale policies:")
       .replace(/^搜索(.+)$/, "Search $1")
@@ -559,14 +582,21 @@
       };
 
       for (const item of lists.get("files")) {
+        if (item?.disabled === true || String(item?.status || "").toLowerCase() === "disabled") continue;
         const provider = String(item?.provider ?? item?.type ?? "").trim();
         const label = String(item?.label ?? item?.email ?? item?.account ?? item?.name ?? "OAuth profile").trim();
         add(item?.id, provider, `${label} · ${provider || "OAuth"}`, "oauth");
       }
+      const formatSortedHeaders = (headers) => {
+        if (!headers || typeof headers !== "object") return "";
+        const keys = Object.keys(headers).sort();
+        return keys.length ? `${keys.map((key) => `${key}\0${String(headers[key] ?? "")}`).join("\0")}\0` : "";
+      };
       const addSimple = async (field, kind, provider) => {
         for (const item of lists.get(field)) {
+		  if (item?.disabled === true || String(item?.status || "").toLowerCase() === "disabled") continue;
 		  if (!String(item?.["api-key"] || "").trim()) continue;
-          const id = await nextID(kind, item?.["api-key"], item?.["base-url"]);
+          const id = await nextID(kind, item?.["api-key"], item?.["base-url"], item?.["proxy-url"], item?.prefix, formatSortedHeaders(item?.headers));
           add(id, provider, `${provider} API provider`, "api");
         }
       };
@@ -705,6 +735,65 @@
       .map((policy) => ({ ...policy, allow_profiles: [...policy.allow_profiles], deny_profiles: [...policy.deny_profiles] }));
   }
 
+  function reconcileProfilePolicies() {
+    if (!state.profiles.length || !state.keys.length) return;
+    const current = new Set(state.profiles.map((profile) => String(profile.id || "").trim()).filter(Boolean));
+    if (!current.size) return;
+    let removed = 0;
+    let restored = 0;
+    let added = 0;
+    let changed = false;
+    for (const key of state.keys) {
+      const cached = state.profileCache[key.scope] && typeof state.profileCache[key.scope] === "object"
+        ? state.profileCache[key.scope]
+        : (state.profileCache[key.scope] = {});
+      for (const side of ["allow_profiles", "deny_profiles"]) {
+        const retained = [];
+        for (const rule of key[side]) {
+          const exact = !String(rule).includes("*") && !String(rule).includes("?");
+          if (exact && !current.has(rule)) {
+            const decision = cached[rule] || {};
+            decision[side === "allow_profiles" ? "allow" : "deny"] = true;
+            cached[rule] = decision;
+            removed += 1;
+            changed = true;
+          } else {
+            retained.push(rule);
+          }
+        }
+        key[side] = retained;
+      }
+      for (const profileID of current) {
+        const hasAllow = key.allow_profiles.some((rule) => profilePatternMatches(rule, profileID));
+        const hasDeny = key.deny_profiles.some((rule) => profilePatternMatches(rule, profileID));
+        const decision = cached[profileID];
+        if (decision && !hasAllow && !hasDeny) {
+          if (decision.allow) key.allow_profiles.push(profileID);
+          if (decision.deny) key.deny_profiles.push(profileID);
+          delete cached[profileID];
+          restored += 1;
+          changed = true;
+        } else if (decision && (hasAllow || hasDeny)) {
+          delete cached[profileID];
+          changed = true;
+        } else if (!decision && !hasAllow && !hasDeny && key.allow_profiles.length && !key.deny_profiles.some((rule) => profilePatternMatches(rule, profileID))) {
+          key.allow_profiles.push(profileID);
+          added += 1;
+          changed = true;
+        }
+      }
+      if (!Object.keys(cached).length) delete state.profileCache[key.scope];
+    }
+    if (!changed) return;
+    saveProfileCache();
+    state.dirty = true;
+    const parts = [];
+    if (removed) parts.push(`${removed} 个失效上游配置已移入缓存`);
+    if (restored) parts.push(`${restored} 个恢复的上游配置已恢复原规则`);
+    if (added) parts.push(`${added} 个新上游配置已自动允许`);
+    state.reconcileNotice = `${parts.join("；")}。请检查并保存策略。`;
+  }
+
   function installRemoteData(remote, preferredScope = "") {
     state.status = remote.status;
     state.keys = remote.keys;
@@ -712,8 +801,10 @@
     state.profilesError = remote.catalog?.error || "";
     state.persistenceSetupError = remote.persistenceSetupError || "";
     applyPolicyDocument(remote.policies?.policy);
-    state.revision = Number(remote.policies?.revision ?? remote.status?.revision ?? 0);
     state.dirty = false;
+    state.reconcileNotice = "";
+    reconcileProfilePolicies();
+    state.revision = Number(remote.policies?.revision ?? remote.status?.revision ?? 0);
     state.openPicker = "";
     state.pickerQuery = "";
     state.pickerScroll = 0;
@@ -937,6 +1028,9 @@
     const runtimeWarning = state.status?.runtime_warning
       ? `<div class="notice">${icons.warning}<span><strong>需要人工协助：</strong> ${escapeHTML(state.status.runtime_warning)}</span></div>`
       : "";
+    const reconcileNotice = state.reconcileNotice
+      ? `<div class="notice"><span>${escapeHTML(state.reconcileNotice)}</span></div>`
+      : "";
     const staleWarning = staleCount
       ? `<div class="notice">${icons.warning}<span><strong>${staleCount} 条失效策略：</strong>这些 caller scope 不对应 CPA 当前 Key。保存时会原样保留，不会静默删除；请在确认旧 Key 已永久移除后通过策略文件处理。</span></div>`
       : "";
@@ -951,6 +1045,7 @@
       </header>
       ${statusWarning}
       ${runtimeWarning}
+      ${reconcileNotice}
       ${staleWarning}
       <section class="overview-grid" aria-label="权限统计">
         ${statCard("当前 CPA Key", state.keys.length, "只读同步")}
@@ -1209,6 +1304,8 @@
       const result = await fetchCurrentKeys({ includeCatalog: true });
       state.profiles = result.catalog?.profiles || [];
       state.profilesError = result.catalog?.error || "";
+      state.reconcileNotice = "";
+      reconcileProfilePolicies();
       renderEditor();
       showToast(state.profiles.length ? `已加载 ${state.profiles.length} 个上游配置` : state.profilesError, state.profiles.length ? "success" : "error");
     } finally {
@@ -1271,6 +1368,7 @@
       applyPolicyDocument(response?.policy || submittedPolicy);
       state.revision = Number(response?.revision ?? expectedRevision + 1);
       state.dirty = false;
+      state.reconcileNotice = "";
       renderAll();
       if (keySetChangedAfterSave) {
         showToast("策略已保存，但 CPA Key 列表在保存期间发生变化；新 Key 当前默认允许全部上游配置，请立即检查。", "error");
@@ -1406,6 +1504,7 @@
   }
 
   function initializeChrome() {
+    state.profileCache = loadProfileCache();
     document.documentElement.classList.toggle("is-embedded", window.self !== window.top);
     $("#searchIcon").innerHTML = icons.search;
     refreshDataButton.innerHTML = icons.refresh;
