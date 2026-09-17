@@ -6,7 +6,7 @@
       "name": "Key Access Manager",
       "description": "Group-based upstream access control / 基于分组的上游访问控制",
       "author": "CHIMOOO",
-      "version": "1.0.0",
+      "version": "0.0.1",
       "repository": "https://github.com/CHIMOOO/key-access-manager"
     }
   ]
