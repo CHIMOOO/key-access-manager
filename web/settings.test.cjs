@@ -30,6 +30,7 @@ function harness(initial = policy()) {
   let codexAPIProfiles = [];
   const requests = [];
   const subjectNames = ['state', 'installRemoteData', 'serializablePolicy', 'keyAllowsProfile', 'policiesEquivalent', 'normalizePolicyDocument', 'renderKeyEditor', 'renderGroupEditor', 'createGroup', 'deleteGroup', 'setKeyMembership', 'updateProfiles', 'selectAllProfiles', 'clearFilteredProfiles', 'profileCategory', 'profileMatchesPicker', 'toggleProfileRule', 'refreshData', 'reload', 'save', 'refreshProfileCatalog', 'connectFromCPAMC', 'finalizeEndedSession'];
+  subjectNames.push('filteredMembers', 'updateFilteredMembers', 'keyGroupTags', 'renderNav', 'memberOptions');
   let source = fs.readFileSync(path.join(__dirname, 'settings.js'), 'utf8');
   assert.match(source, /  initializeChrome\(\);\s+connectFromCPAMC\(\);/);
   source = source.replace(/  initializeChrome\(\);\s+connectFromCPAMC\(\);/, `  globalThis.subject = {${subjectNames.join(',')}};`);
@@ -337,4 +338,47 @@ test('selected other tab stays reachable when its last provider disappears', () 
   assert.match(html, /id="allow_profiles-tab-other"[^>]*aria-selected="true"[^>]*tabindex="0"/);
   assert.match(html, /aria-labelledby="allow_profiles-tab-other"/);
   assert.equal(h.api.state.dirty, false);
+});
+
+test('member search retains original key indexes and bulk edits only matching memberships', async () => {
+  const h = harness(policy([group('team'), group('other')], [
+    {caller_scope: scopeA, group_ids: ['team']},
+    {caller_scope: scopeB, group_ids: ['other']},
+  ]));
+  const api = h.api;
+  api.state.selectedGroup = 'team';
+  api.state.memberQuery = '  key 02  ';
+  assert.deepEqual(plain(api.filteredMembers().map(item => item.index)), [1]);
+  assert.match(api.memberOptions(api.state.groups[0]), /data-group-key="1"/);
+  assert.equal(api.state.dirty, false);
+  api.updateFilteredMembers(true);
+  assert.deepEqual(plain(api.state.keys.map(key => key.group_ids)), [['team'], ['other', 'team']]);
+  api.updateFilteredMembers(false);
+  assert.deepEqual(plain(api.state.keys.map(key => key.group_ids)), [['team'], ['other']]);
+  api.state.memberQuery = api.state.keys[0].fingerprint.toUpperCase();
+  assert.deepEqual(plain(api.filteredMembers().map(item => item.index)), [0]);
+  api.state.memberQuery = 'TEST••••';
+  assert.equal(api.filteredMembers().length, 2);
+  api.state.memberQuery = 'no matching key';
+  api.state.dirty = false;
+  api.updateFilteredMembers(true);
+  assert.equal(api.state.dirty, false);
+  api.state.dirty = true;
+  await api.save();
+  await api.refreshData();
+  assert.deepEqual(plain(api.state.keys.map(key => key.group_ids)), [['team'], ['other']]);
+});
+
+test('key group labels show all names, escape markup, and follow membership changes', () => {
+  const h = harness(policy([group('team'), {...group('other'), name:'QA <review>'}], [{caller_scope:scopeA,group_ids:['team','other']}]));
+  const api = h.api;
+  let labels = api.keyGroupTags(api.state.keys[0]);
+  assert.match(labels, /team/);
+  assert.match(labels, /QA &lt;review&gt;/);
+  api.state.groups[0].name = '开发组';
+  api.renderNav();
+  assert.match(h.elements.get('#policyNav').innerHTML, /key-group-tag[^>]*>开发组/);
+  assert.match(api.keyGroupTags(api.state.keys[1]), /未分组/);
+  api.setKeyMembership(api.state.keys[0], 'team', false);
+  assert.doesNotMatch(api.keyGroupTags(api.state.keys[0]), /开发组/);
 });

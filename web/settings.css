@@ -612,6 +612,14 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .group-actions, .membership-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: .55rem; }
 .group-actions { flex-shrink: 0; }
 .membership-toolbar { padding: .85rem 1.15rem; }
+.membership-search { position: relative; padding: .85rem 1.15rem 0; }
+.membership-search > span { position: absolute; left: 1.85rem; top: 1.6rem; color: var(--text-tertiary); pointer-events: none; }
+.membership-search svg { width: .9rem; height: .9rem; }
+.membership-search input { min-height: 2.4rem; padding: .5rem .75rem .5rem 2.1rem; font-size: .78rem; }
+.membership-count { margin-right: auto; color: var(--text-secondary); font-size: .73rem; font-variant-numeric: tabular-nums; }
+.nav-copy .key-group-tags { display: flex; flex-wrap: wrap; gap: .3rem; margin-top: .35rem; white-space: normal; overflow: visible; }
+.nav-copy .key-group-tag { display: inline-block; max-width: 100%; padding: .12rem .4rem; border: 1px solid var(--border); border-radius: .35rem; color: var(--text-secondary); background: var(--surface-subtle); font-size: .65rem; line-height: 1.5; white-space: normal; overflow-wrap: anywhere; }
+.nav-copy .key-group-empty { color: var(--text-tertiary); font-size: .65rem; }
 .membership-list { max-height: 27rem; overflow-y: auto; }
 .membership-option { display: flex; align-items: center; gap: .85rem; padding: .9rem 1.15rem; border-bottom: 1px solid var(--border); cursor: pointer; }
 .membership-option:last-child { border-bottom: 0; }

@@ -63,6 +63,7 @@
     pendingScope: "",
     pendingGroup: "",
     search: "",
+    memberQuery: "",
     openPicker: "",
     pickerQuery: "",
     pickerCategory: "codex",
@@ -77,6 +78,11 @@
   // and deliberately falls back to English instead of the browser's Chinese
   // locale. Chinese remains available for existing installations.
   const ENGLISH_REPLACEMENTS = [
+    ["搜索分组成员", "Search group members"],
+    ["搜索 Key 编号、脱敏值或指纹…", "Search key number, masked value or fingerprint…"],
+    ["选择筛选结果", "Select filtered keys"],
+    ["移除筛选结果", "Remove filtered keys"],
+    ["未分组", "No groups"],
     ["已开启", "On"],
     ["已关闭", "Off"],
     ["上游配置类型", "Provider category"],
@@ -960,8 +966,13 @@
       </button>`).join("") || '<p class="empty-nav">暂无分组，请先新建分组</p>'}
       <p class="nav-group-label">当前 CPA API Keys</p>
       ${visible.length ? visible.map(({ key, index }) => `<button class="nav-item" type="button" data-select="key" data-index="${index}" aria-current="${state.selectedIndex === index ? "page" : "false"}" aria-label="${escapeHTML(keyLabel(index))}，${escapeHTML(key.masked)}，SHA-256 指纹 ${escapeHTML(key.fingerprint)}">
-        <span class="nav-icon key">${icons.key}</span><span class="nav-copy"><strong>${escapeHTML(keyLabel(index))}</strong><span class="mono masked-key">${escapeHTML(key.masked)}</span><span>${key.group_ids.length} groups · SHA-256 ${escapeHTML(key.fingerprint)}</span></span>
+        <span class="nav-icon key">${icons.key}</span><span class="nav-copy"><strong>${escapeHTML(keyLabel(index))}</strong><span class="mono masked-key">${escapeHTML(key.masked)}</span><span>SHA-256 ${escapeHTML(key.fingerprint)}</span><span class="key-group-tags">${keyGroupTags(key)}</span></span>
       </button>`).join("") : `<p class="empty-nav">${query ? "没有匹配的 Key" : "CPA 当前没有 API Key"}</p>`}`;
+  }
+
+  function keyGroupTags(key) {
+    const groups = state.groups.filter((group) => key.group_ids.includes(group.id));
+    return groups.length ? groups.map((group) => `<span class="key-group-tag" data-literal>${escapeHTML(group.name)}</span>`).join("") : '<span class="key-group-empty">未分组</span>';
   }
 
   function renderEditor() {
@@ -1115,8 +1126,9 @@
         ${profilePicker("deny_profiles", "拒绝上游配置", "命中后始终拒绝访问", group.deny_profiles, true)}
       </section>
       <section class="card"><div class="card-head"><h2>分组成员</h2><p>可多选 Key 加入当前分组，不影响这些 Key 的其他分组。</p></div>
-        <div class="membership-toolbar"><button class="button secondary compact" type="button" data-action="all-group-keys">选择全部当前 Key</button><button class="button secondary compact" type="button" data-action="clear-group-keys">移除全部当前 Key</button></div>
-        <div class="membership-list">${state.keys.map((key, index) => `<label class="membership-option"><input type="checkbox" data-group-key="${index}" ${key.group_ids.includes(group.id) ? "checked" : ""}><span><strong>${escapeHTML(keyLabel(index))}</strong><small class="mono">${escapeHTML(key.masked)} · ${escapeHTML(key.fingerprint)}</small></span></label>`).join("") || '<p class="provider-empty">CPA 当前没有 API Key</p>'}</div>
+        <div class="membership-search"><span>${icons.search}</span><input type="search" data-member-search value="${escapeHTML(state.memberQuery)}" placeholder="搜索 Key 编号、脱敏值或指纹…" aria-label="搜索分组成员" autocomplete="off"></div>
+        <div class="membership-toolbar"><span class="membership-count" data-member-count>${filteredMembers().length} / ${state.keys.length} Key</span><button class="button secondary compact" type="button" data-action="all-group-keys" ${filteredMembers().length ? "" : "disabled"}>选择筛选结果</button><button class="button secondary compact" type="button" data-action="clear-group-keys" ${filteredMembers().length ? "" : "disabled"}>移除筛选结果</button></div>
+        <div class="membership-list" data-group-members>${memberOptions(group)}</div>
         ${staleMembers ? `<p class="membership-note">${staleMembers} caller scope · <span>失效 Key 的分组成员关系仍保留。</span></p>` : ""}
       </section>`;
   }
@@ -1126,12 +1138,45 @@
   }
 
   function openGroup(id) {
+    state.memberQuery = "";
     state.selectedIndex = -1;
     state.selectedGroup = id;
     state.openPicker = "allow_profiles";
     state.pickerQuery = "";
     state.pickerCategory = "codex";
     state.pickerScroll = 0;
+    renderAll();
+  }
+
+  function filteredMembers() {
+    const query = state.memberQuery.trim().toLowerCase();
+    return state.keys.map((key, index) => ({ key, index })).filter(({ key, index }) =>
+      `${keyLabel(index)} ${key.masked} ${key.fingerprint}`.toLowerCase().includes(query));
+  }
+
+  function memberOptions(group) {
+    return filteredMembers().map(({ key, index }) => `<label class="membership-option"><input type="checkbox" data-group-key="${index}" ${key.group_ids.includes(group.id) ? "checked" : ""}><span><strong>${escapeHTML(keyLabel(index))}</strong><small class="mono">${escapeHTML(key.masked)} · ${escapeHTML(key.fingerprint)}</small></span></label>`).join("") || `<p class="provider-empty">${state.keys.length ? "没有匹配的 Key" : "CPA 当前没有 API Key"}</p>`;
+  }
+
+  function filterGroupMembers(input) {
+    state.memberQuery = input.value;
+    const group = selectedGroup();
+    if (!group) return;
+    const list = editor.querySelector('[data-group-members]');
+    if (list) list.innerHTML = memberOptions(group);
+    const count = filteredMembers().length;
+    const counter = editor.querySelector('[data-member-count]');
+    if (counter) counter.textContent = `${count} / ${state.keys.length} Key`;
+    editor.querySelectorAll('[data-action="all-group-keys"], [data-action="clear-group-keys"]').forEach((button) => { button.disabled = state.busy || !count; });
+  }
+
+  function updateFilteredMembers(checked) {
+    const group = selectedGroup();
+    if (!group || state.busy) return;
+    const changes = filteredMembers().filter(({ key }) => key.group_ids.includes(group.id) !== checked);
+    if (!changes.length) return;
+    for (const { key } of changes) setKeyMembership(key, group.id, checked);
+    markDirty();
     renderAll();
   }
 
@@ -1600,10 +1645,7 @@
       key.group_ids = []; key.hasPolicy = true;
       markDirty(); renderAll();
     } else if (action === "all-group-keys" || action === "clear-group-keys") {
-      const group = selectedGroup();
-      if (!group) return;
-      for (const key of state.keys) setKeyMembership(key, group.id, action === "all-group-keys");
-      markDirty(); renderAll();
+      updateFilteredMembers(action === "all-group-keys");
     } else if (action === "toggle-picker" && validProfileKind(kind)) {
       const opening = state.openPicker !== kind;
       state.openPicker = opening ? kind : "";
@@ -1676,6 +1718,7 @@
 
   editor.addEventListener("input", (event) => {
     if (event.target.matches("[data-profile-search]")) filterProfilePicker(event.target);
+    if (event.target.matches("[data-member-search]")) filterGroupMembers(event.target);
   });
 
   document.addEventListener("keydown", (event) => {
