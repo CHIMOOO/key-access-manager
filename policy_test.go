@@ -70,7 +70,7 @@ func TestCompileDocumentV2Semantics(t *testing.T) {
 }
 
 func TestCompileDocumentRejectsV1InvalidScopeAndDuplicates(t *testing.T) {
-	if _, _, err := compileDocument(policyDocument{Version: 1}); err == nil || !strings.Contains(err.Error(), "only version 2") {
+	if _, _, err := compileDocument(policyDocument{Version: 1}); err == nil || !strings.Contains(err.Error(), "unsupported policy version") {
 		t.Fatalf("v1 error = %v", err)
 	}
 	if _, _, err := compileDocument(policyDocument{Version: 2, Policies: []policyConfig{{CallerScope: "not-a-scope"}}}); err == nil {
@@ -209,7 +209,7 @@ func TestInterceptorAcceptsSchedulerMigratedAPIKeyID(t *testing.T) {
 	}
 }
 
-func TestSchedulerUnconfiguredKeyFallsBackAndConfiguredKeyFailsClosed(t *testing.T) {
+func TestSchedulerUnconfiguredAndConfiguredDeniedKeysFailClosed(t *testing.T) {
 	installTestPolicy(t, policyDocument{Version: 2, Policies: []policyConfig{{
 		CallerScope: scopeA, DenyProfiles: []string{"*"},
 	}}})
@@ -223,10 +223,12 @@ func TestSchedulerUnconfiguredKeyFallsBackAndConfiguredKeyFailsClosed(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	var fallback schedulerPickResponse
-	unwrapEnvelope(t, rawResponse, &fallback)
-	if fallback.Handled {
-		t.Fatalf("unconfigured key response = %#v", fallback)
+	var unconfigured envelope
+	if err := json.Unmarshal(rawResponse, &unconfigured); err != nil {
+		t.Fatal(err)
+	}
+	if unconfigured.OK || unconfigured.Error == nil || unconfigured.Error.HTTPStatus != http.StatusForbidden {
+		t.Fatalf("unconfigured key must be denied by default: %#v", unconfigured)
 	}
 
 	request.Options.Metadata["caller_scope"] = scopeA
@@ -282,7 +284,7 @@ func TestSuccessfulPolicyEnforcementClearsRuntimeWarning(t *testing.T) {
 	}
 }
 
-func TestSchedulerTransientlyAdoptsRotatedProfileIDs(t *testing.T) {
+func TestSchedulerNeverAdoptsUnapprovedRotatedProfileIDs(t *testing.T) {
 	installTestPolicy(t, policyDocument{Version: 2, Policies: []policyConfig{{
 		CallerScope: scopeA, AllowProfiles: []string{"gemini:apikey:old-id"},
 	}}})
@@ -296,16 +298,18 @@ func TestSchedulerTransientlyAdoptsRotatedProfileIDs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var selected schedulerPickResponse
-	unwrapEnvelope(t, rawResponse, &selected)
-	if !selected.Handled || selected.AuthID != "gemini:apikey:new-id" {
-		t.Fatalf("rotated profile was not adopted: %#v", selected)
+	var rejected envelope
+	if err := json.Unmarshal(rawResponse, &rejected); err != nil {
+		t.Fatal(err)
+	}
+	if rejected.OK || rejected.Error == nil || rejected.Error.HTTPStatus != http.StatusForbidden {
+		t.Fatalf("unapproved rotated profile was adopted: %#v", rejected)
 	}
 	allowed := callIntercept(t, requestInterceptRequest{Metadata: map[string]any{
-		"caller_scope": scopeA, "selected_auth_id": selected.AuthID,
+		"caller_scope": scopeA, "selected_auth_id": "gemini:apikey:new-id",
 	}})
-	if allowed.Terminate {
-		t.Fatalf("transiently adopted profile was rejected after auth: %#v", allowed)
+	if !allowed.Terminate || allowed.StatusCode != http.StatusForbidden {
+		t.Fatalf("unapproved rotated profile was allowed after auth: %#v", allowed)
 	}
 }
 
@@ -346,16 +350,16 @@ func TestInterceptorIdentityAndUnconfiguredKeyRules(t *testing.T) {
 			t.Fatalf("invalid caller_scope %#v was allowed while policies exist", invalidScope)
 		}
 	}
-	if response := callIntercept(t, requestInterceptRequest{Metadata: map[string]any{"caller_scope": scopeB, "selected_auth_id": "blocked"}}); response.Terminate {
-		t.Fatalf("unconfigured caller_scope was denied: %#v", response)
+	if response := callIntercept(t, requestInterceptRequest{Metadata: map[string]any{"caller_scope": scopeB, "selected_auth_id": "blocked"}}); !response.Terminate {
+		t.Fatalf("unconfigured caller_scope was allowed: %#v", response)
 	}
 	if response := callIntercept(t, requestInterceptRequest{Metadata: map[string]any{"caller_scope": scopeA}}); !response.Terminate {
 		t.Fatal("configured caller_scope with an unavailable profile was allowed")
 	}
 
 	installTestPolicy(t, policyDocument{Version: 2})
-	if response := callIntercept(t, requestInterceptRequest{Metadata: map[string]any{"selected_auth_id": "anything"}}); response.Terminate {
-		t.Fatalf("missing caller_scope was denied with no configured policies: %#v", response)
+	if response := callIntercept(t, requestInterceptRequest{Metadata: map[string]any{"selected_auth_id": "anything"}}); !response.Terminate {
+		t.Fatalf("missing caller_scope was allowed with default deny: %#v", response)
 	}
 }
 
@@ -371,7 +375,7 @@ func TestInitialInvalidConfigurationBlocksAll(t *testing.T) {
 		t.Fatalf("initial invalid configuration did not block all: %#v", response)
 	}
 	_, snapshot, _, _, _, lastError := globalState.current()
-	if !snapshot.BlockAll || !strings.Contains(lastError, "only version 2") {
+	if !snapshot.BlockAll || !strings.Contains(lastError, "unsupported policy version") {
 		t.Fatalf("snapshot=%#v lastError=%q", snapshot, lastError)
 	}
 }
@@ -428,7 +432,7 @@ func TestPolicyFileIsStrictV2(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := compileDocument(document); err == nil || !strings.Contains(err.Error(), "only version 2") {
+	if _, _, err := compileDocument(document); err == nil || !strings.Contains(err.Error(), "unsupported policy version") {
 		t.Fatalf("v1 compile error = %v", err)
 	}
 }
@@ -561,7 +565,7 @@ func TestManagementInitializeStorageDoesNotOverwriteInvalidExistingFile(t *testi
 func TestManagementPUTRejectsLegacyIdentityFields(t *testing.T) {
 	installTestPolicy(t, policyDocument{Version: 2})
 	for _, forbidden := range []string{"key", "key_sha256", "id", "enabled"} {
-		body := []byte(`{"version":2,"policies":[{"caller_scope":"` + scopeA + `","allow_profiles":[],"deny_profiles":[],"` + forbidden + `":"value"}]}`)
+		body := []byte(`{"version":3,"policies":[{"caller_scope":"` + scopeA + `","group_ids":[],"` + forbidden + `":"value"}]}`)
 		raw, err := managementReplacePolicies(body, "")
 		if err != nil {
 			t.Fatal(err)
@@ -573,7 +577,7 @@ func TestManagementPUTRejectsLegacyIdentityFields(t *testing.T) {
 	}
 }
 
-func TestManagementPersistenceAndGETUseOnlyV2Schema(t *testing.T) {
+func TestManagementPersistenceAndGETUseGroupSchema(t *testing.T) {
 	dir := t.TempDir()
 	policyPath := filepath.Join(dir, "policies.yaml")
 	installTestPolicy(t, policyDocument{Version: 2})
@@ -581,7 +585,7 @@ func TestManagementPersistenceAndGETUseOnlyV2Schema(t *testing.T) {
 	cfg.PolicyFile = policyPath
 	globalState.replace(cfg, snapshot, "test")
 
-	body := []byte(`{"version":2,"policies":[{"caller_scope":"` + scopeA + `","allow_profiles":["gpt-*"],"deny_profiles":[]}]}`)
+	body := []byte(`{"version":3,"access_control_enabled":true,"default_deny":true,"groups":[{"id":"test","name":"Test","allow_profiles":["gpt-*"],"deny_profiles":[]}],"policies":[{"caller_scope":"` + scopeA + `","group_ids":["test"]}]}`)
 	raw, err := managementReplacePolicies(body, "")
 	if err != nil {
 		t.Fatal(err)
@@ -593,12 +597,12 @@ func TestManagementPersistenceAndGETUseOnlyV2Schema(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, forbidden := range []string{"key:", "key_sha256:", "id:", "enabled:"} {
+	for _, forbidden := range []string{"key:", "key_sha256:"} {
 		if strings.Contains(string(persisted), forbidden) {
 			t.Fatalf("persisted policy contains %q:\n%s", forbidden, persisted)
 		}
 	}
-	if !strings.Contains(string(persisted), "version: 2") || !strings.Contains(string(persisted), "caller_scope:") {
+	if !strings.Contains(string(persisted), "version: 3") || !strings.Contains(string(persisted), "group_ids:") {
 		t.Fatalf("unexpected persisted document:\n%s", persisted)
 	}
 
@@ -607,7 +611,7 @@ func TestManagementPersistenceAndGETUseOnlyV2Schema(t *testing.T) {
 		t.Fatal(err)
 	}
 	response := decodeManagementResponse(t, raw)
-	for _, forbidden := range []string{`"key":`, `"key_sha256":`, `"id":`, `"enabled":`} {
+	for _, forbidden := range []string{`"key":`, `"key_sha256":`, `"enabled":`} {
 		if strings.Contains(string(response.Body), forbidden) {
 			t.Fatalf("GET policy contains forbidden field %s: %s", forbidden, response.Body)
 		}
@@ -621,7 +625,7 @@ func TestManagementPersistenceAndGETUseOnlyV2Schema(t *testing.T) {
 	if err := json.Unmarshal(response.Body, &payload); err != nil {
 		t.Fatal(err)
 	}
-	if len(payload.Policy) != 2 || payload.Policy["version"] == nil || payload.Policy["policies"] == nil {
+	if len(payload.Policy) != 5 || payload.Policy["version"] == nil || payload.Policy["policies"] == nil || payload.Policy["groups"] == nil || payload.Policy["default_deny"] == nil || payload.Policy["access_control_enabled"] == nil {
 		t.Fatalf("GET policy schema = %#v", payload.Policy)
 	}
 }
@@ -650,7 +654,7 @@ func TestManagementReloadKeepsLastValidSnapshotOnInvalidFile(t *testing.T) {
 		t.Fatal("invalid reload replaced the last valid snapshot")
 	}
 	_, _, _, _, _, lastError := globalState.current()
-	if !strings.Contains(lastError, "only version 2") {
+	if !strings.Contains(lastError, "unsupported policy version") {
 		t.Fatalf("last error = %q", lastError)
 	}
 }
@@ -663,8 +667,8 @@ func TestConcurrentManagementUpdatesKeepDiskAndMemoryConsistent(t *testing.T) {
 	globalState.replace(cfg, snapshot, "test")
 
 	bodies := [][]byte{
-		[]byte(`{"version":2,"policies":[{"caller_scope":"` + scopeA + `","allow_profiles":["gpt-*"],"deny_profiles":[]}]}`),
-		[]byte(`{"version":2,"policies":[{"caller_scope":"` + scopeB + `","allow_profiles":["claude-*"],"deny_profiles":[]}]}`),
+		[]byte(`{"version":3,"access_control_enabled":true,"default_deny":true,"groups":[{"id":"test","name":"Test","allow_profiles":["gpt-*"],"deny_profiles":[]}],"policies":[{"caller_scope":"` + scopeA + `","group_ids":["test"]}]}`),
+		[]byte(`{"version":3,"access_control_enabled":true,"default_deny":true,"groups":[{"id":"test","name":"Test","allow_profiles":["claude-*"],"deny_profiles":[]}],"policies":[{"caller_scope":"` + scopeB + `","group_ids":["test"]}]}`),
 	}
 	var wait sync.WaitGroup
 	for _, body := range bodies {
@@ -712,7 +716,7 @@ func TestStatusReportsBuiltinAuthenticationContract(t *testing.T) {
 	for field, want := range map[string]string{
 		"auth_mode":               "cpa_builtin_api_keys",
 		"identity_source":         "Metadata.caller_scope",
-		"unconfigured_key_action": "allow",
+		"unconfigured_key_action": "deny",
 	} {
 		if status[field] != want {
 			t.Errorf("status[%q] = %#v, want %q", field, status[field], want)
@@ -755,7 +759,8 @@ func installTestPolicy(t *testing.T, document policyDocument) {
 	if err != nil {
 		t.Fatalf("compile test policy: %v", err)
 	}
-	cfg := pluginConfig{Version: sanitized.Version, Policies: clonePolicyConfigs(sanitized.Policies)}
+	cfg := pluginConfig{}
+	applyDocumentToConfig(&cfg, sanitized)
 	globalState.replace(cfg, snapshot, "test")
 	t.Cleanup(globalState.clear)
 }

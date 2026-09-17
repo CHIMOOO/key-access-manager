@@ -598,3 +598,35 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
   :root { --border: rgba(0, 0, 0, 0.28); --border-strong: rgba(0, 0, 0, 0.48); }
   :root[data-theme="dark"] { --border: rgba(255, 255, 255, 0.3); --border-strong: rgba(255, 255, 255, 0.5); }
 }
+
+
+/* Group membership is edited separately from group provider permissions. */
+.nav-group-heading { display: flex; align-items: center; justify-content: space-between; margin-right: .4rem; }
+.nav-add { border: 1px solid var(--border); border-radius: .4rem; background: var(--surface-raised); width: 1.65rem; height: 1.65rem; cursor: pointer; }
+.group-actions, .membership-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: .55rem; }
+.group-actions { flex-shrink: 0; }
+.membership-toolbar { padding: .85rem 1.15rem; }
+.membership-list { max-height: 27rem; overflow-y: auto; }
+.membership-option { display: flex; align-items: center; gap: .85rem; padding: .9rem 1.15rem; border-bottom: 1px solid var(--border); cursor: pointer; }
+.membership-option:last-child { border-bottom: 0; }
+.membership-choice { display: flex; align-items: center; gap: .85rem; flex: 1; min-width: 0; cursor: pointer; }
+.membership-option > span, .membership-choice > span { min-width: 0; flex: 1; }
+.membership-option strong { display: block; overflow-wrap: anywhere; font-size: .83rem; }
+.membership-option small { display: block; color: var(--text-secondary); font-size: .7rem; overflow-wrap: anywhere; }
+.membership-option input { flex-shrink: 0; width: 1.05rem; height: 1.05rem; accent-color: var(--text); cursor: pointer; }
+.membership-option:has(input:checked) { background: var(--surface-selected); }
+.membership-note { color: var(--text-secondary); padding: 0 1.15rem .85rem; font-size: .75rem; }
+.effective-profiles { display: flex; flex-wrap: wrap; gap: .5rem; padding: 1.15rem; }
+.setting-copy small { display: block; margin-top: .3rem; color: var(--text-secondary); font-size: .73rem; }
+.setting-switch { appearance: none; position: relative; width: 2.6rem; height: 1.5rem; min-width: 2.6rem; border: 1px solid var(--border-strong); border-radius: 2rem; background: var(--surface-subtle); cursor: pointer; transition: background 150ms; }
+.setting-switch::before { content: ""; position: absolute; top: .15rem; left: .15rem; height: 1.05rem; width: 1.05rem; border-radius: 50%; background: var(--text-tertiary); transition: transform 150ms; }
+.setting-switch:checked { background: var(--text); border-color: var(--text); }
+.setting-switch:checked::before { background: var(--bg); transform: translateX(1.05rem); }
+.setting-switch:focus-visible, .membership-option input:focus-visible, .nav-add:focus-visible { outline: 2px solid var(--text); outline-offset: 3px; }
+.danger-button { color: var(--danger); }
+@media (max-width: 600px) {
+  .group-actions { flex-wrap: wrap; }
+  .setting-row:has(.setting-switch) { flex-direction: row; align-items: center; }
+  .membership-option { gap: .55rem; padding: .8rem; }
+  .membership-option .button { padding: .4rem .55rem; font-size: .7rem; }
+}

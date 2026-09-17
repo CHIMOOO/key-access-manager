@@ -1,26 +1,19 @@
-# Merge this example into CLIProxyAPI's config.yaml.
-# CPA's built-in provider owns and authenticates these raw API keys.
+# Merge into CPA config.yaml. CPA owns/authenticates downstream keys.
 api-keys:
   - "replace-with-a-real-api-key"
-
 plugins:
   enabled: true
   dir: "plugins"
   configs:
+    # Runtime ID retained for upgrade compatibility.
     key-provider-access:
       enabled: true
       priority: 100
-
-      # Safe default: authenticated CPA keys without a policy may use every
-      # upstream auth profile currently eligible for the requested route.
-      version: 2
+      version: 3
+      access_control_enabled: true
+      default_deny: true
+      groups: []
       policies: []
-
-      # Persistence is initialized automatically the first time the Web UI opens:
-      # <plugins.dir>/key-provider-access/config.toml is created, then this plugin
-      # config is patched with policy_file through CPA's Management API.
-      #
-      # Optional explicit override (YAML and TOML are supported). The target must
-      # already contain a valid v2 policy document; a missing/invalid explicit
-      # policy_file fails closed. Relative paths use CLIProxyAPI's working directory.
+      # Use the UI to create groups, choose profiles and assign keys, then save.
+      # Optional existing YAML/TOML file (v2 migrates to v3):
       # policy_file: "config/key-provider-access-policies.yaml"

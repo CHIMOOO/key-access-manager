@@ -62,23 +62,23 @@ func TestSettingsPageEmbedsAssetsWithNonceCSP(t *testing.T) {
 		"class=\"profile-trigger",
 		"<progress class=\"selection-meter\"",
 		"state.pendingDraft = serializablePolicy()",
-		"const commonWildcards",
+		"function selectedGroup()",
+		"data-key-group",
+		"data-group-key",
+		"access_control_enabled",
+		"default_deny",
 		"cli-proxy-api:caller-scope:v1\\0",
 		"<strong>${escapeHTML(keyLabel(index))}</strong>",
 		"function maskCPAKey(value)",
 		"masked: maskCPAKey(normalizedValues[index])",
 		"class=\"mono masked-key\"",
-		"function profileRulesConflict(rule, oppositeRules)",
-		"mutually-excluded",
-		"function toggleProfileRule(kind, profileID, derived = false)",
-		"function expandWildcardForException(rules, excludedProfileID)",
-		"function removeConflictingRules(rules, profileID)",
+		"function toggleProfileRule(kind, profileID)",
+		"function setKeyMembership(key, groupID, checked)",
 		"function keyAllowsProfile(key, profileID)",
 		"function providerAccessCounts()",
 		"Provider 访问计数",
 		"Provider / Profile",
 		"profileID",
-		"每个上游 Profile 单独统计",
 		"允许 / Enabled",
 		"拒绝 / Disabled",
 		":root",
@@ -89,7 +89,7 @@ func TestSettingsPageEmbedsAssetsWithNonceCSP(t *testing.T) {
 	}
 	for _, forbidden := range []string{
 		"addKeyButton",
-		"credential",
+		"id=\"credential\"",
 		"delete-key",
 		"default_action",
 		"profiles_endpoint",
@@ -97,6 +97,8 @@ func TestSettingsPageEmbedsAssetsWithNonceCSP(t *testing.T) {
 		"id=\"managementKey\"",
 		"id=\"authForm\"",
 		"style=\"",
+		"reconcileProfilePolicies",
+		"PROFILE_CACHE_KEY",
 	} {
 		if strings.Contains(body, forbidden) {
 			t.Fatalf("settings page contains removed key-management UI or logic %q", forbidden)
@@ -144,7 +146,7 @@ func TestHandleManagementServesSettingsResource(t *testing.T) {
 	}
 }
 
-func TestManagementPoliciesReturnsSafeV2DocumentWhenFailClosed(t *testing.T) {
+func TestManagementPoliciesReturnsSafeV3DocumentWhenFailClosed(t *testing.T) {
 	globalState.clear()
 	t.Cleanup(globalState.clear)
 	globalState.failClosedOrPreserve(pluginConfig{Version: 1}, schemaVersion, errTestPolicy)
@@ -158,7 +160,7 @@ func TestManagementPoliciesReturnsSafeV2DocumentWhenFailClosed(t *testing.T) {
 	if string(response.Body) == "" || strings.Contains(string(response.Body), `"version":1`) {
 		t.Fatalf("unsafe fail-closed policy response: %s", response.Body)
 	}
-	if !strings.Contains(string(response.Body), `"version":2`) || !strings.Contains(string(response.Body), `"policies":[]`) {
+	if !strings.Contains(string(response.Body), `"version":3`) || !strings.Contains(string(response.Body), `"policies":[]`) {
 		t.Fatalf("unexpected fail-closed policy response: %s", response.Body)
 	}
 }
@@ -166,7 +168,7 @@ func TestManagementPoliciesReturnsSafeV2DocumentWhenFailClosed(t *testing.T) {
 func TestPolicyRevisionRejectsStaleWrites(t *testing.T) {
 	installTestPolicy(t, policyDocument{Version: 2, Policies: []policyConfig{{CallerScope: scopeA, AllowProfiles: []string{"*"}}}})
 	initialRevision := globalState.policyRevision()
-	body := []byte(`{"version":2,"policies":[{"caller_scope":"` + scopeB + `","allow_profiles":["gpt-*"],"deny_profiles":[]}]}`)
+	body := []byte(`{"version":3,"access_control_enabled":true,"default_deny":true,"groups":[{"id":"test","name":"Test","allow_profiles":["gpt-*"],"deny_profiles":[]}],"policies":[{"caller_scope":"` + scopeB + `","group_ids":["test"]}]}`)
 
 	raw, err := managementReplacePolicies(body, etagForRevision(initialRevision))
 	if err != nil {

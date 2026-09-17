@@ -1,15 +1,17 @@
-version: 2
-
-# Use the Web UI to generate caller scopes and select live auth profile IDs.
+version: 3
+access_control_enabled: true
+default_deny: true
+# Only groups define upstream rules. Empty allow lists grant nothing.
+groups:
+  - id: developers
+    name: Developers
+    allow_profiles: ["codex:apikey:abc123def456", "oauth-profile-id"]
+    deny_profiles: ["*-retired"]
+  - id: restricted
+    name: Restricted
+    allow_profiles: []
+    deny_profiles: ["private-*"]
+# Use the UI to derive caller scopes; do not enter raw API keys.
 policies:
   - caller_scope: "f7291f3315e5ab0d3c02015a081879d748693f231d8370b43f38f57be991734a"
-    allow_profiles:
-      - "codex:apikey:abc123def456"
-      - "oauth-profile-id"
-    deny_profiles:
-      - "*-retired"
-
-  - caller_scope: "7cb03289303ff43e7ec5853fd1020a9bd0395cc40d9fe5134e33fe2534b30358"
-    allow_profiles: []
-    deny_profiles:
-      - "test-*"
+    group_ids: [developers, restricted]

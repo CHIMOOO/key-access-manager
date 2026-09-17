@@ -22,7 +22,6 @@
   const CPAMC_AUTH_KEY = "cli-proxy-auth";
   const CPAMC_THEME_KEY = "cli-proxy-theme";
   const CPAMC_LANGUAGE_KEY = "cli-proxy-language";
-  const PROFILE_CACHE_KEY = "key-provider-access-profile-cache-v1";
   const SUPPORTED_LANGUAGES = new Set(["en", "zh-CN", "zh-TW", "ru"]);
   const OBFUSCATION_PREFIX = "enc::v1::";
   const OBFUSCATION_SALT = "cli-proxy-api-webui::secure-storage";
@@ -48,8 +47,10 @@
     profilesError: "",
     persistenceSetupError: "",
     stalePolicies: [],
-    profileCache: {},
-    reconcileNotice: "",
+    groups: [],
+    accessControlEnabled: true,
+    defaultDeny: true,
+    selectedGroup: "",
     revision: 0,
     selectedIndex: -1,
     dirty: false,
@@ -58,7 +59,9 @@
     sessionBusy: false,
     sessionEnded: false,
     pendingDraft: null,
+    pendingRevision: null,
     pendingScope: "",
+    pendingGroup: "",
     search: "",
     openPicker: "",
     pickerQuery: "",
@@ -73,11 +76,65 @@
   // and deliberately falls back to English instead of the browser's Chinese
   // locale. Chinese remains available for existing installations.
   const ENGLISH_REPLACEMENTS = [
+    ["Key 可加入多个权限分组；上游配置只能通过分组授权或排除。", "Keys may join multiple groups. Provider access is allowed or denied only through groups."],
+    ["全局设置与访问统计", "Global settings and access counts"],
+    ["按组管理 CPA Key 的访问权限", "Group-based access control for CPA keys"],
+    ["保存访问策略", "Save access policy"],
+    ["权限分组", "Access groups"],
+    ["暂无分组，请先新建分组", "No groups yet. Create a group to get started."],
+    ["新建分组", "New group"],
+    ["全局设置", "Global settings"],
+    ["修改后点击保存修改生效。", "Changes take effect after you save."],
+    ["启用访问控制", "Enable access control"],
+    ["关闭后所有已认证 Key 均可访问全部上游配置，分组规则仍会保留。", "When disabled, every authenticated key can use every provider. Group rules are preserved."],
+    ["默认拒绝未分组 Key", "Deny ungrouped keys by default"],
+    ["包含新建 Key 和没有分组的现有 Key；加入分组后按分组规则授权。", "Applies to new and existing keys without groups. Assigned keys follow their group rules."],
+    ["访问控制已关闭：所有已认证 Key 均可访问全部上游配置。", "Access control is disabled: every authenticated key can use every provider."],
+    ["已分组 Key", "Grouped keys"],
+    ["支持多选分组", "Multiple groups per key"],
+    ["未分组 Key", "Ungrouped keys"],
+    ["默认拒绝全部", "Deny all by default"],
+    ["默认允许全部", "Allow all by default"],
+    ["允许合并，拒绝优先", "Allow union; deny takes priority"],
+    ["统计当前草稿的有效权限；修改后点击保存修改生效。", "Shows effective permissions in the current draft. Save to apply your changes."],
+    ["分组授权规则", "Group authorization rules"],
+    ["多个分组的允许列表合并；任意分组的拒绝规则始终优先。分组允许列表为空时不授予访问权限。", "Allowed providers are combined across groups; a deny in any group takes priority. An empty group allow list grants no access."],
+    ["新增或暂时不可用的上游配置不会自动改变已保存的分组规则。", "New or temporarily unavailable providers never automatically change saved group rules."],
+    ["当前未分组，默认拒绝所有上游配置。", "This key has no groups and is denied access to every provider by default."],
+    ["当前未分组，默认允许所有上游配置。", "This key has no groups and is allowed to use every provider by default."],
+    ["多个分组的允许列表合并；任意分组的拒绝规则始终优先。", "Allowed providers are combined across groups; a deny in any group takes priority."],
+    ["所属分组", "Group membership"],
+    ["可多选分组；上游配置的允许与拒绝规则统一在分组中管理。", "Select one or more groups. Provider allow and deny rules are managed only in groups."],
+    ["编辑分组", "Edit group"],
+    ["清空分组", "Clear groups"],
+    ["有效上游权限", "Effective provider access"],
+    ["修改分组规则会影响所有已加入此分组的 Key。", "Changes to this group affect every key assigned to it."],
+    ["重命名", "Rename"],
+    ["删除分组", "Delete group"],
+    ["分组上游配置规则", "Group provider rules"],
+    ["允许列表为空时不授予访问权限；拒绝规则在所有分组间优先。", "An empty allow list grants no access. Deny rules take priority across all groups."],
+    ["仅授予列表中的上游配置；空列表不授予权限", "Only these providers are allowed; an empty list grants no access"],
+    ["分组成员", "Group members"],
+    ["可多选 Key 加入当前分组，不影响这些 Key 的其他分组。", "Select multiple keys for this group without changing their other memberships."],
+    ["选择全部当前 Key", "Select all current keys"],
+    ["移除全部当前 Key", "Remove all current keys"],
+    ["失效 Key 的分组成员关系仍保留。", "Memberships for missing keys are preserved."],
+    ["输入分组名称（最多 128 个字符）：", "Enter a group name (up to 128 characters):"],
+    ["分组名称不能为空、超过 128 个字符或与现有名称重复。", "Use a unique, non-empty group name of up to 128 characters."],
+    ["删除分组并从所有 Key 中移除此分组？失去最后一个分组的 Key 将遵循全局默认策略。修改将在保存后生效。", "Delete this group and remove its membership from every key? Keys losing their final group will follow the global default policy. Changes take effect after saving."],
+    ["由通配符匹配；移除通配符后可单独选择。", "Matched by a wildcard. Remove the wildcard to select individual providers."],
+    ["插件返回了无效的 v3 策略文档。", "The plugin returned an invalid v3 policy document."],
+    ["分组格式无效或名称重复。", "Invalid group format or duplicate group name."],
+    ["分组的上游配置规则无效。", "Invalid provider rules in group."],
+    ["Key 必须通过有效分组配置权限。", "Key permissions must reference valid groups."],
+    ["策略已保存，但 CPA Key 列表在保存期间发生变化；新 Key 遵循全局默认策略，请检查分组。", "The policy was saved, but the CPA key list changed during saving. New keys follow the global default policy; review their groups."],
+    ["允许", "Allowed"],
+    ["拒绝", "Denied"],
     ["正在接入管理会话", "Connecting to management session"],
     ["正在只读获取 CPAMC 当前连接信息，无需再次输入 Management Key。", "Reading the current CPAMC connection in read-only mode. No second Management Key is required."],
     ["重新读取会话", "Read session again"],
     ["插件只读取 CPAMC 已保存的同源会话，不会复制或再次持久化 Management Key。", "The plugin only reads the saved same-origin CPAMC session; it never copies or persists the Management Key again."],
-    ["上游配置权限", "Key Provider Access"],
+    ["上游配置权限", "Key Access Manager"],
     ["现有 Key 的上游配置访问策略", "Provider access policies for existing CPA keys"],
     ["策略导航", "Policy navigation"],
     ["只读来源", "Read-only source"],
@@ -109,7 +166,6 @@
     ["认证边界", "Authentication boundary"],
     ["Key 身份与上游配置授权相互分离。", "Key identity and provider authorization are kept separate."],
     ["认证由 CPA 内置 API Keys 管理", "Authentication is managed by CPA's built-in API keys"],
-    ["插件仅接收 CPA 提供的 caller scope，并据此执行 allow_profiles 与 deny_profiles。未配置策略或规则为空时，默认允许全部上游配置。", "The plugin receives only CPA's caller scope and applies allow_profiles and deny_profiles. With no policy or empty rules, all providers are allowed by default."],
     ["运行状态", "Runtime status"],
     ["来自当前 CPA 插件实例。", "Reported by the current CPA plugin instance."],
     ["认证模式", "Authentication mode"],
@@ -120,8 +176,6 @@
     ["策略版本", "Policy version"],
     ["策略来源", "Policy source"],
     ["最后更新", "Last updated"],
-    ["当前默认允许全部上游配置。", "All providers are currently allowed by default."],
-    ["从目录中选择允许或拒绝上游配置后才会为此 Key 写入策略。", "A policy is written for this key only after you select providers to allow or deny."],
     ["上游配置规则", "Provider rules"],
     ["直接从 CPA 可用上游配置目录中选择；拒绝规则始终优先于允许规则。", "Select directly from CPA's available provider catalog; deny rules always take precedence over allow rules."],
     ["允许上游配置", "Allow providers"],
@@ -161,8 +215,7 @@
     ["策略已被其他管理员或配置重载修改。请刷新数据后再保存。", "The policy was changed by another administrator or a configuration reload. Refresh before saving."],
     ["策略已保存并持久化", "Policy saved and persisted"],
     ["策略已保存到内存", "Policy saved in memory"],
-    ["刷新数据", "Refresh data"]
-    , ["插件返回了无效的 v2 策略文档。", "The plugin returned an invalid v2 policy document."],
+    ["刷新数据", "Refresh data"],
     ["CPA 响应超时，请检查服务状态。", "CPA response timed out; check the service status."],
     ["操作响应超时，提交结果尚未确认。", "The operation timed out; the submission result is not confirmed."],
     ["CPA 当前没有可用的 OAuth 或 API provider 配置。", "CPA has no usable OAuth or API provider profiles."],
@@ -179,7 +232,6 @@
     ["CPAMC 会话已结束", "CPAMC session ended"],
     ["未保存的策略草稿已保留在当前页面内存中。请重新登录；会话恢复后草稿会自动还原。", "The unsaved policy draft was kept in this page's memory. Sign in again; it will be restored when the session returns."],
     ["请先在 CPAMC 重新登录并启用“记住密码”，页面会自动重新接入。", "Sign in to CPAMC again with “remember password” enabled; this page will reconnect automatically."],
-    ["策略已保存，但 CPA Key 列表在保存期间发生变化；新 Key 当前默认允许全部上游配置，请立即检查。", "The policy was saved, but the CPA key list changed during saving. New keys currently allow all providers by default; review them now."],
     ["策略已保存，但无法复核 CPA Key 列表：", "The policy was saved, but the CPA key list could not be verified: "],
     ["策略已保存，但状态刷新失败：", "The policy was saved, but status refresh failed: "],
     ["保存响应超时，但已重新读取并确认提交成功", "The save response timed out, but a reread confirmed the submission succeeded"],
@@ -235,19 +287,6 @@
     return SUPPORTED_LANGUAGES.has(normalized) ? normalized : "en";
   }
 
-  function loadProfileCache() {
-    try {
-      const parsed = JSON.parse(localStorage.getItem(PROFILE_CACHE_KEY) || "{}");
-      return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
-    } catch (_) {
-      return {};
-    }
-  }
-
-  function saveProfileCache() {
-    try { localStorage.setItem(PROFILE_CACHE_KEY, JSON.stringify(state.profileCache)); } catch (_) { /* cache is optional */ }
-  }
-
   function translateText(value) {
     let text = String(value ?? "");
     if (currentLanguage === "zh-CN") {
@@ -272,13 +311,6 @@
       .replace(/^点击将取消(.+)匹配$/, "Click to cancel the $1 match")
       .replace(/^当前匹配 (\d+) 个上游配置，并覆盖未来同前缀上游配置$/, "Matches $1 providers and future providers with the same prefix")
       .replace(/^已保留 (\d+) 条现有规则$/, "$1 existing rules retained")
-      .replace(/^(?:(\d+) 个失效上游配置已移入缓存；)?(?:(\d+) 个恢复的上游配置已恢复原规则；)?(?:(\d+) 个新上游配置已自动允许。)?请检查并保存策略。$/, (_, removed, restored, added) => {
-        const parts = [];
-        if (removed) parts.push(`${removed} stale profiles moved to cache`);
-        if (restored) parts.push(`${restored} returning profiles restored from cache`);
-        if (added) parts.push(`${added} new profiles automatically allowed`);
-        return `${parts.join("; ")}. Review and save the policy.`;
-      })
       .replace(/^已匹配 (\d+) \/ (\d+)$/, "Matched $1 / $2")
       .replace(/^(\d+) 条失效策略：$/, "$1 stale policies:")
       .replace(/^搜索(.+)$/, "Search $1")
@@ -300,10 +332,12 @@
       const nodes = [];
       while (walker.nextNode()) nodes.push(walker.currentNode);
       nodes.forEach((node) => {
+        if (node.parentElement?.closest("[data-literal]")) return;
         const translated = translateText(node.nodeValue);
         if (translated !== node.nodeValue) node.nodeValue = translated;
       });
       document.querySelectorAll("[placeholder], [aria-label], [title]").forEach((element) => {
+        if (element.closest("[data-literal]")) return;
         for (const attribute of ["placeholder", "aria-label", "title"]) {
           if (element.hasAttribute(attribute)) element.setAttribute(attribute, translateText(element.getAttribute(attribute)));
         }
@@ -385,29 +419,32 @@
   }
 
   function profileRuleMatches(pattern, profile) {
-    return profilePatternMatches(pattern, profile.id);
-  }
-
-  function oppositeProfileKind(kind) {
-    return kind === "allow_profiles" ? "deny_profiles" : "allow_profiles";
-  }
-
-  function profileRulesConflict(rule, oppositeRules) {
-    if (!rule || !oppositeRules.length) return false;
-    if (rule === "*" || oppositeRules.includes("*")) return true;
-    const wildcard = rule.includes("*") || rule.includes("?");
-    return oppositeRules.some((oppositeRule) => {
-      const oppositeWildcard = oppositeRule.includes("*") || oppositeRule.includes("?");
-      if (!wildcard) return profilePatternMatches(oppositeRule, rule);
-      if (!oppositeWildcard) return profilePatternMatches(rule, oppositeRule);
-      return state.profiles.some((profile) => profilePatternMatches(rule, profile.id) && profilePatternMatches(oppositeRule, profile.id));
-    });
+    return profilePatternMatches(pattern, profile.id)
+      || Boolean(profile.legacyID && profilePatternMatches(pattern, profile.legacyID));
   }
 
   function normalizePolicyDocument(raw) {
-    if (!raw || typeof raw !== "object" || raw.version !== 2 || !Array.isArray(raw.policies)) {
-      throw new Error("插件返回了无效的 v2 策略文档。");
+    if (!raw || typeof raw !== "object" || raw.version !== 3 || !Array.isArray(raw.policies) || !Array.isArray(raw.groups)
+      || typeof raw.access_control_enabled !== "boolean" || typeof raw.default_deny !== "boolean") {
+      throw new Error(translateText("插件返回了无效的 v3 策略文档。"));
     }
+    const groupIDs = new Set();
+    const groupNames = new Set();
+    const groups = raw.groups.map((group) => {
+      if (!group || typeof group.id !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(group.id)
+        || typeof group.name !== "string" || !group.name.trim() || [...group.name.trim()].length > 128
+        || groupIDs.has(group.id) || groupNames.has(group.name.trim().toLowerCase())) {
+        throw new Error(translateText("分组格式无效或名称重复。"));
+      }
+      groupIDs.add(group.id);
+      groupNames.add(group.name.trim().toLowerCase());
+      for (const field of ["allow_profiles", "deny_profiles"]) {
+        if (!Array.isArray(group[field]) || group[field].some((profile) => typeof profile !== "string" || !profile.trim())) {
+          throw new Error(translateText("分组的上游配置规则无效。"));
+        }
+      }
+      return { id: group.id, name: group.name.trim(), allow_profiles: normalizeProfiles(group.allow_profiles), deny_profiles: normalizeProfiles(group.deny_profiles) };
+    });
     const seen = new Set();
     const policies = raw.policies.map((item, index) => {
       if (!item || typeof item !== "object") throw new Error(`策略 ${index + 1} 格式无效。`);
@@ -415,18 +452,16 @@
       if (!/^[0-9a-f]{64}$/.test(scope)) throw new Error(`策略 ${index + 1} 的 caller scope 无效。`);
       if (seen.has(scope)) throw new Error(`策略 ${index + 1} 的 caller scope 重复。`);
       seen.add(scope);
-      for (const field of ["allow_profiles", "deny_profiles"]) {
-        if (!Array.isArray(item[field]) || item[field].some((profile) => typeof profile !== "string" || !profile.trim())) {
-          throw new Error(`策略 ${index + 1} 的 ${field} 无效。`);
-        }
+      if (!Array.isArray(item.group_ids) || item.group_ids.some((id) => typeof id !== "string" || !groupIDs.has(id))
+        || Object.hasOwn(item, "allow_profiles") || Object.hasOwn(item, "deny_profiles")) {
+        throw new Error(translateText("Key 必须通过有效分组配置权限。"));
       }
       return {
         caller_scope: scope,
-        allow_profiles: normalizeProfiles(item.allow_profiles),
-        deny_profiles: normalizeProfiles(item.deny_profiles)
+        group_ids: [...new Set(item.group_ids)]
       };
     });
-    return { version: 2, policies };
+    return { version: 3, access_control_enabled: raw.access_control_enabled, default_deny: raw.default_deny, groups, policies };
   }
 
   function shortFingerprint(scope) {
@@ -570,11 +605,11 @@
       const profiles = [];
       const seen = new Set();
       const counters = new Map();
-      const add = (id, provider, displayName, kind) => {
+      const add = (id, provider, displayName, kind, legacyID = "") => {
         id = String(id || "").trim();
         if (!id || seen.has(id)) return;
         seen.add(id);
-        profiles.push({ id, provider: String(provider || "").trim(), displayName: String(displayName || "").trim(), kind });
+        profiles.push({ id, provider: String(provider || "").trim(), displayName: String(displayName || "").trim(), kind, ...(legacyID ? { legacyID } : {}) });
       };
       const nextID = async (kind, ...parts) => {
         const digest = await sha256Hex([kind, ...parts.map((part) => String(part || "").trim())].join("\0"));
@@ -597,10 +632,14 @@
       };
       const addSimple = async (field, kind, provider) => {
         for (const item of lists.get(field)) {
-		  if (item?.disabled === true || String(item?.status || "").toLowerCase() === "disabled") continue;
-		  if (!String(item?.["api-key"] || "").trim()) continue;
+          if (item?.disabled === true || String(item?.status || "").toLowerCase() === "disabled") continue;
+          if (!String(item?.["api-key"] || "").trim()) continue;
           const id = await nextID(kind, item?.["api-key"], item?.["base-url"], item?.["proxy-url"], item?.prefix, formatSortedHeaders(item?.headers));
-          add(id, provider, `${provider} API provider`, "api");
+          // Match the backend's verified pre-v7.2.146 identity alias. Only the
+          // digest is retained in this in-memory catalog; credentials and
+          // aliases are never copied into the policy or browser storage.
+          const digest = await sha256Hex([kind, String(item?.["api-key"] || "").trim(), String(item?.["base-url"] || "").trim()].join("\0"));
+          add(id, provider, `${provider} API provider`, "api", `${kind}:${digest.slice(0, 12)}`);
         }
       };
       await addSimple("gemini-api-key", "gemini:apikey", "gemini");
@@ -653,8 +692,8 @@
       const keys = scopes.map((scope, index) => ({
         scope,
         masked: maskCPAKey(normalizedValues[index]),
-        allow_profiles: [],
-        deny_profiles: []
+        group_ids: [],
+        hasPolicy: false
       })).filter((key) => {
         if (seen.has(key.scope)) return false;
         seen.add(key.scope);
@@ -725,76 +764,20 @@
     const byScope = new Map(documentValue.policies.map((policy) => [policy.caller_scope, policy]));
     const currentScopes = new Set(state.keys.map((key) => key.scope));
 
+    state.groups = documentValue.groups;
+    state.accessControlEnabled = documentValue.access_control_enabled;
+    state.defaultDeny = documentValue.default_deny;
     state.keys = state.keys.map((key) => {
       const policy = byScope.get(key.scope);
       return {
         ...key,
-        allow_profiles: policy ? [...policy.allow_profiles] : [],
-        deny_profiles: policy ? [...policy.deny_profiles] : []
+        group_ids: policy ? [...policy.group_ids] : [],
+        hasPolicy: Boolean(policy)
       };
     });
     state.stalePolicies = documentValue.policies
       .filter((policy) => !currentScopes.has(policy.caller_scope))
-      .map((policy) => ({ ...policy, allow_profiles: [...policy.allow_profiles], deny_profiles: [...policy.deny_profiles] }));
-  }
-
-  function reconcileProfilePolicies() {
-    if (!state.profiles.length || !state.keys.length) return;
-    const current = new Set(state.profiles.map((profile) => String(profile.id || "").trim()).filter(Boolean));
-    if (!current.size) return;
-    let removed = 0;
-    let restored = 0;
-    let added = 0;
-    let changed = false;
-    for (const key of state.keys) {
-      const cached = state.profileCache[key.scope] && typeof state.profileCache[key.scope] === "object"
-        ? state.profileCache[key.scope]
-        : (state.profileCache[key.scope] = {});
-      for (const side of ["allow_profiles", "deny_profiles"]) {
-        const retained = [];
-        for (const rule of key[side]) {
-          const exact = !String(rule).includes("*") && !String(rule).includes("?");
-          if (exact && !current.has(rule)) {
-            const decision = cached[rule] || {};
-            decision[side === "allow_profiles" ? "allow" : "deny"] = true;
-            cached[rule] = decision;
-            removed += 1;
-            changed = true;
-          } else {
-            retained.push(rule);
-          }
-        }
-        key[side] = retained;
-      }
-      for (const profileID of current) {
-        const hasAllow = key.allow_profiles.some((rule) => profilePatternMatches(rule, profileID));
-        const hasDeny = key.deny_profiles.some((rule) => profilePatternMatches(rule, profileID));
-        const decision = cached[profileID];
-        if (decision && !hasAllow && !hasDeny) {
-          if (decision.allow) key.allow_profiles.push(profileID);
-          if (decision.deny) key.deny_profiles.push(profileID);
-          delete cached[profileID];
-          restored += 1;
-          changed = true;
-        } else if (decision && (hasAllow || hasDeny)) {
-          delete cached[profileID];
-          changed = true;
-        } else if (!decision && !hasAllow && !hasDeny && key.allow_profiles.length && !key.deny_profiles.some((rule) => profilePatternMatches(rule, profileID))) {
-          key.allow_profiles.push(profileID);
-          added += 1;
-          changed = true;
-        }
-      }
-      if (!Object.keys(cached).length) delete state.profileCache[key.scope];
-    }
-    if (!changed) return;
-    saveProfileCache();
-    state.dirty = true;
-    const parts = [];
-    if (removed) parts.push(`${removed} 个失效上游配置已移入缓存`);
-    if (restored) parts.push(`${restored} 个恢复的上游配置已恢复原规则`);
-    if (added) parts.push(`${added} 个新上游配置已自动允许`);
-    state.reconcileNotice = `${parts.join("；")}。请检查并保存策略。`;
+      .map((policy) => ({ ...policy, group_ids: [...policy.group_ids] }));
   }
 
   function installRemoteData(remote, preferredScope = "") {
@@ -805,13 +788,12 @@
     state.persistenceSetupError = remote.persistenceSetupError || "";
     applyPolicyDocument(remote.policies?.policy);
     state.dirty = false;
-    state.reconcileNotice = "";
-    reconcileProfilePolicies();
     state.revision = Number(remote.policies?.revision ?? remote.status?.revision ?? 0);
     state.openPicker = "";
     state.pickerQuery = "";
     state.pickerScroll = 0;
     state.selectedIndex = preferredScope ? state.keys.findIndex((key) => key.scope === preferredScope) : -1;
+    if (state.selectedIndex >= 0 || !state.groups.some((group) => group.id === state.selectedGroup)) state.selectedGroup = "";
   }
 
   function setSessionState(kind, title, message) {
@@ -836,13 +818,20 @@
     try {
       const remote = await fetchRemoteData();
       const pendingDraft = state.pendingDraft;
+      const pendingRevision = state.pendingRevision;
       const pendingScope = state.pendingScope;
       installRemoteData(remote, pendingScope);
       if (pendingDraft) {
         applyPolicyDocument(pendingDraft);
+        // A restored draft is still based on its original revision. Keeping
+        // that revision lets If-Match reject intervening remote changes.
+        state.revision = pendingRevision ?? 0;
         state.dirty = true;
         state.pendingDraft = null;
+        state.pendingRevision = null;
         state.pendingScope = "";
+        state.selectedGroup = state.groups.some((group) => group.id === state.pendingGroup) ? state.pendingGroup : "";
+        state.pendingGroup = "";
       }
       state.sessionEnded = false;
       authGate.hidden = true;
@@ -864,13 +853,17 @@
     const hadDraft = state.dirty;
     if (hadDraft) {
       state.pendingDraft = serializablePolicy();
+      state.pendingRevision = state.revision;
       state.pendingScope = selectedKey()?.scope || "";
+      state.pendingGroup = state.selectedGroup;
     }
     state.token = "";
     state.status = null;
     state.keys = [];
     state.profiles = [];
     state.stalePolicies = [];
+    state.groups = [];
+    state.selectedGroup = "";
     state.dirty = false;
     state.sessionEnded = false;
     app.hidden = true;
@@ -913,7 +906,7 @@
   function syncHeader() {
     const healthy = state.status && !state.status.last_error;
     const warning = state.status?.last_error || state.status?.runtime_warning;
-    healthBadge.innerHTML = `<span class="status-dot ${warning ? "warning" : healthy ? "" : "error"}"></span><span>${escapeHTML(warning ? "策略警告" : healthy ? `Schema v${state.status.schema_version || 2}` : "未连接")}</span>`;
+    healthBadge.innerHTML = `<span class="status-dot ${warning ? "warning" : healthy ? "" : "error"}"></span><span>${escapeHTML(warning ? "策略警告" : healthy ? `Schema v${state.status.schema_version || 3}` : "未连接")}</span>`;
     healthBadge.title = warning ? (state.status.last_error || runtimeWarningText(state.status.runtime_warning)) : "插件运行正常";
     saveButton.disabled = state.busy || state.profileBusy || !state.dirty;
     reloadButton.disabled = state.busy || state.profileBusy || !state.status?.persistent_updates;
@@ -950,36 +943,42 @@
       !query || key.masked.toLowerCase().includes(query) || key.fingerprint.toLowerCase().includes(query) || keyLabel(index).toLowerCase().includes(query)
     );
     nav.innerHTML = `
-      <button class="nav-item" type="button" data-select="overview" aria-current="${state.selectedIndex < 0 ? "page" : "false"}">
-        <span class="nav-icon">${icons.overview}</span>
-        <span class="nav-copy"><strong>权限概览</strong><span>认证由 CPA 管理</span></span>
+      <button class="nav-item" type="button" data-select="overview" aria-current="${state.selectedIndex < 0 && !state.selectedGroup ? "page" : "false"}">
+        <span class="nav-icon">${icons.overview}</span><span class="nav-copy"><strong>权限概览</strong><span>全局设置与访问统计</span></span>
       </button>
+      <div class="nav-group-heading"><p class="nav-group-label">权限分组</p><button class="nav-add" type="button" data-select="create-group" aria-label="新建分组">+</button></div>
+      ${state.groups.map((group) => `<button class="nav-item" type="button" data-select="group" data-group="${escapeHTML(group.id)}" aria-current="${state.selectedGroup === group.id ? "page" : "false"}">
+        <span class="nav-icon">${icons.overview}</span><span class="nav-copy"><strong data-literal>${escapeHTML(group.name)}</strong><span>${state.keys.filter((key) => key.group_ids.includes(group.id)).length} Key · ${group.allow_profiles.length} allow / ${group.deny_profiles.length} deny</span></span>
+      </button>`).join("") || '<p class="empty-nav">暂无分组，请先新建分组</p>'}
       <p class="nav-group-label">当前 CPA API Keys</p>
-      ${visible.length ? visible.map(({ key, index }) => `
-        <button class="nav-item" type="button" data-select="key" data-index="${index}" aria-current="${state.selectedIndex === index ? "page" : "false"}" aria-label="${escapeHTML(keyLabel(index))}，${escapeHTML(key.masked)}，SHA-256 指纹 ${escapeHTML(key.fingerprint)}">
-          <span class="nav-icon key">${icons.key}</span>
-          <span class="nav-copy"><strong>${escapeHTML(keyLabel(index))}</strong><span class="mono masked-key">${escapeHTML(key.masked)}</span><span>SHA-256 ${escapeHTML(key.fingerprint)}</span></span>
-        </button>`).join("") : `<p class="empty-nav">${query ? "没有匹配的 Key" : "CPA 当前没有 API Key"}</p>`}
-    `;
+      ${visible.length ? visible.map(({ key, index }) => `<button class="nav-item" type="button" data-select="key" data-index="${index}" aria-current="${state.selectedIndex === index ? "page" : "false"}" aria-label="${escapeHTML(keyLabel(index))}，${escapeHTML(key.masked)}，SHA-256 指纹 ${escapeHTML(key.fingerprint)}">
+        <span class="nav-icon key">${icons.key}</span><span class="nav-copy"><strong>${escapeHTML(keyLabel(index))}</strong><span class="mono masked-key">${escapeHTML(key.masked)}</span><span>${key.group_ids.length} groups · SHA-256 ${escapeHTML(key.fingerprint)}</span></span>
+      </button>`).join("") : `<p class="empty-nav">${query ? "没有匹配的 Key" : "CPA 当前没有 API Key"}</p>`}`;
   }
 
   function renderEditor() {
+    const group = selectedGroup();
+    if (group) { renderGroupEditor(group); return; }
     if (state.selectedIndex >= 0 && state.keys[state.selectedIndex]) {
       renderKeyEditor(state.keys[state.selectedIndex], state.selectedIndex);
       return;
     }
     state.selectedIndex = -1;
+    state.selectedGroup = "";
     renderOverview();
   }
 
   function hasRules(key) {
-    return key.allow_profiles.length > 0 || key.deny_profiles.length > 0;
+    return key.group_ids.length > 0;
   }
 
   function keyAllowsProfile(key, profileID) {
-    if (key.deny_profiles.some((rule) => profilePatternMatches(rule, profileID))) return false;
-    if (!key.allow_profiles.length) return true;
-    return key.allow_profiles.some((rule) => profilePatternMatches(rule, profileID));
+    if (!state.accessControlEnabled) return true;
+    if (!key.group_ids.length) return !state.defaultDeny;
+    const profile = state.profiles.find((candidate) => candidate.id === profileID || candidate.legacyID === profileID) || { id: profileID };
+    const groups = state.groups.filter((group) => key.group_ids.includes(group.id));
+    if (groups.some((group) => group.deny_profiles.some((rule) => profileRuleMatches(rule, profile)))) return false;
+    return groups.some((group) => group.allow_profiles.some((rule) => profileRuleMatches(rule, profile)));
   }
 
   function providerAccessCounts() {
@@ -1012,7 +1011,7 @@
     return `<div class="provider-table-wrap"><table class="provider-table">
       <thead><tr><th scope="col">Provider / Profile</th><th scope="col">Type</th><th scope="col">允许 / Enabled</th><th scope="col">拒绝 / Disabled</th></tr></thead>
       <tbody>${counts.map((item) => `<tr>
-        <th scope="row"><span class="provider-name">${escapeHTML(item.provider)}</span><small class="provider-profile">${escapeHTML(item.profile)} · ${escapeHTML(item.profileID)}</small></th>
+        <th scope="row"><span class="provider-name" data-literal>${escapeHTML(item.provider)}</span><small class="provider-profile" data-literal>${escapeHTML(item.profile)} · ${escapeHTML(item.profileID)}</small></th>
         <td>${escapeHTML(item.kind)}</td>
         <td><strong class="provider-count enabled">${item.enabled}</strong></td>
         <td><strong class="provider-count disabled">${item.disabled}</strong></td>
@@ -1033,56 +1032,35 @@
 
   function renderOverview() {
     const configured = state.keys.filter(hasRules).length;
-    const defaults = state.keys.length - configured;
     const staleCount = state.stalePolicies.length;
-    const providerCounts = providerAccessCounts();
     const statusWarning = state.status?.last_error
-      ? `<div class="notice">${icons.warning}<span><strong>最近一次配置存在问题：</strong> ${escapeHTML(state.status.last_error)}。当前仍在使用最后一个有效策略。</span></div>`
-      : "";
+      ? `<div class="notice">${icons.warning}<span><strong>最近一次配置存在问题：</strong> ${escapeHTML(state.status.last_error)}。当前仍在使用最后一个有效策略。</span></div>` : "";
     const runtimeWarning = state.status?.runtime_warning
-      ? `<div class="notice">${icons.warning}<span><strong>最近的策略拒绝：</strong> ${escapeHTML(runtimeWarningText(state.status.runtime_warning))}</span></div>`
-      : "";
-    const reconcileNotice = state.reconcileNotice
-      ? `<div class="notice"><span>${escapeHTML(state.reconcileNotice)}</span></div>`
-      : "";
+      ? `<div class="notice">${icons.warning}<span><strong>最近的策略拒绝：</strong> ${escapeHTML(runtimeWarningText(state.status.runtime_warning))}</span></div>` : "";
     const staleWarning = staleCount
-      ? `<div class="notice">${icons.warning}<span><strong>${staleCount} 条失效策略：</strong>这些 caller scope 不对应 CPA 当前 Key。保存时会原样保留，不会静默删除；请在确认旧 Key 已永久移除后通过策略文件处理。</span></div>`
-      : "";
-
+      ? `<div class="notice">${icons.warning}<span><strong>${staleCount} 条失效策略：</strong>这些 caller scope 不对应 CPA 当前 Key。保存时会原样保留，不会静默删除；请在确认旧 Key 已永久移除后通过策略文件处理。</span></div>` : "";
     editor.innerHTML = `
-      <header class="editor-head">
-        <div class="editor-title-wrap">
-          <p class="editor-kicker">Access overview</p>
-          <h1>上游配置权限概览</h1>
-          <p class="editor-subtitle">API Key 的创建、删除和生命周期完全由 CPA 管理；此页面只为现有 Key 配置上游配置规则。</p>
-        </div>
-      </header>
-      ${statusWarning}
-      ${runtimeWarning}
-      ${reconcileNotice}
-      ${staleWarning}
+      <header class="editor-head"><div class="editor-title-wrap"><p class="editor-kicker">Key Access Manager</p><h1>上游配置权限概览</h1><p class="editor-subtitle">Key 可加入多个权限分组；上游配置只能通过分组授权或排除。</p></div><button class="button secondary" type="button" data-action="create-group">新建分组</button></header>
+      ${statusWarning}${runtimeWarning}${staleWarning}
+      <section class="card">
+        <div class="card-head"><h2>全局设置</h2><p>修改后点击保存修改生效。</p></div>
+        <label class="setting-row"><span class="setting-copy"><strong>启用访问控制</strong><small>关闭后所有已认证 Key 均可访问全部上游配置，分组规则仍会保留。</small></span><input class="setting-switch" type="checkbox" role="switch" data-setting="accessControlEnabled" ${state.accessControlEnabled ? "checked" : ""}></label>
+        <label class="setting-row"><span class="setting-copy"><strong>默认拒绝未分组 Key</strong><small>包含新建 Key 和没有分组的现有 Key；加入分组后按分组规则授权。</small></span><input class="setting-switch" type="checkbox" role="switch" data-setting="defaultDeny" ${state.defaultDeny ? "checked" : ""}></label>
+      </section>
+      ${!state.accessControlEnabled ? '<div class="notice">访问控制已关闭：所有已认证 Key 均可访问全部上游配置。</div>' : ""}
       <section class="overview-grid" aria-label="权限统计">
         ${statCard("当前 CPA Key", state.keys.length, "只读同步")}
-        ${statCard("已配置", configured, "含 allow 或 deny")}
-        ${statCard("默认允许", defaults, "没有上游配置规则")}
-        ${statCard("失效策略", staleCount, "保存时仍保留", staleCount > 0)}
+        ${statCard("已分组 Key", configured, "支持多选分组")}
+        ${statCard("未分组 Key", state.keys.length - configured, state.accessControlEnabled && state.defaultDeny ? "默认拒绝全部" : "默认允许全部")}
+        ${statCard("权限分组", state.groups.length, "允许合并，拒绝优先")}
       </section>
-      <section class="card">
-        <div class="card-head"><h2>Provider 访问计数</h2><p>每个上游 Profile 单独统计，不会合并同一 Provider 类型的 OAuth/API 条目；每个 CPA Key 对每个 Profile 计一次。</p></div>
-        ${providerAccessTable(providerCounts)}
+      <section class="card"><div class="card-head"><h2>Provider 访问计数</h2><p>统计当前草稿的有效权限；修改后点击保存修改生效。</p></div>${providerAccessTable(providerAccessCounts())}</section>
+      <section class="card"><div class="card-head"><h2>分组授权规则</h2><p>多个分组的允许列表合并；任意分组的拒绝规则始终优先。分组允许列表为空时不授予访问权限。</p></div>
+        <div class="info-callout"><span class="callout-icon">${icons.key}</span><div><strong>认证由 CPA 内置 API Keys 管理</strong><p>新增或暂时不可用的上游配置不会自动改变已保存的分组规则。</p></div></div>
       </section>
-      <section class="card">
-        <div class="card-head"><h2>认证边界</h2><p>Key 身份与上游配置授权相互分离。</p></div>
-        <div class="info-callout">
-          <span class="callout-icon">${icons.key}</span>
-          <div><strong>认证由 CPA 内置 API Keys 管理</strong><p>插件仅接收 CPA 提供的 caller scope，并据此执行 allow_profiles 与 deny_profiles。未配置策略或规则为空时，默认允许全部上游配置。</p></div>
-        </div>
-      </section>
-      <section class="card">
-        <div class="card-head"><h2>运行状态</h2><p>来自当前 CPA 插件实例。</p></div>
+      <section class="card"><div class="card-head"><h2>运行状态</h2><p>来自当前 CPA 插件实例。</p></div>
         ${statusRow("认证模式", displayAuthMode(state.status?.auth_mode))}
         ${statusRow("身份来源", state.status?.identity_source || "—")}
-        ${statusRow("未配置 Key", state.status?.unconfigured_key_action === "allow" ? "允许全部上游配置" : state.status?.unconfigured_key_action || "—")}
         ${statusRow("后端策略数", state.status?.policy_count ?? "—")}
         ${statusRow("策略版本", `rev-${state.revision}`)}
         ${statusRow("策略来源", state.status?.source || "—")}
@@ -1103,92 +1081,109 @@
   }
 
   function renderKeyEditor(key, index) {
-    const empty = !hasRules(key);
-    editor.innerHTML = `
-      <header class="editor-head">
-        <div class="editor-title-wrap">
-          <p class="editor-kicker">Existing CPA key</p>
-          <h1>${escapeHTML(keyLabel(index))}</h1>
-          <p class="editor-subtitle key-summary"><span class="mono masked-key">${escapeHTML(key.masked)}</span><span class="mono">SHA-256 ${escapeHTML(key.fingerprint)}</span></p>
-        </div>
-      </header>
-      ${empty ? `<div class="default-notice">${icons.check}<span><strong>当前默认允许全部上游配置。</strong>从目录中选择允许或拒绝上游配置后才会为此 Key 写入策略。</span></div>` : ""}
-      <section class="card rules-card">
-        <div class="card-head"><h2>上游配置规则</h2><p>直接从 CPA 可用上游配置目录中选择；拒绝规则始终优先于允许规则。</p></div>
-        ${profilePicker("allow_profiles", "允许上游配置", "设置后，仅允许列表中的上游配置", key.allow_profiles, false)}
-        ${profilePicker("deny_profiles", "拒绝上游配置", "命中后始终拒绝访问", key.deny_profiles, true)}
+    const message = !state.accessControlEnabled ? "访问控制已关闭：所有已认证 Key 均可访问全部上游配置。"
+      : !hasRules(key) ? state.defaultDeny ? "当前未分组，默认拒绝所有上游配置。" : "当前未分组，默认允许所有上游配置。"
+      : "多个分组的允许列表合并；任意分组的拒绝规则始终优先。";
+    editor.innerHTML = `<header class="editor-head"><div class="editor-title-wrap"><p class="editor-kicker">CPA API Key</p><h1>${escapeHTML(keyLabel(index))}</h1><p class="editor-subtitle key-summary"><span class="mono masked-key">${escapeHTML(key.masked)}</span><span class="mono">SHA-256 ${escapeHTML(key.fingerprint)}</span></p></div></header>
+      <div class="default-notice">${icons.key}<span>${message}</span></div>
+      <section class="card"><div class="card-head"><h2>所属分组</h2><p>可多选分组；上游配置的允许与拒绝规则统一在分组中管理。</p></div>
+        <div class="membership-list">${state.groups.map((group) => `<div class="membership-option"><label class="membership-choice"><input type="checkbox" data-key-group="${escapeHTML(group.id)}" ${key.group_ids.includes(group.id) ? "checked" : ""}><span><strong data-literal>${escapeHTML(group.name)}</strong><small>${group.allow_profiles.length} allow / ${group.deny_profiles.length} deny</small></span></label><button class="button secondary compact" type="button" data-action="open-group" data-group="${escapeHTML(group.id)}">编辑分组</button></div>`).join("") || '<p class="provider-empty">暂无分组，请先新建分组</p>'}</div>
+        <div class="membership-toolbar"><button class="button secondary compact" type="button" data-action="create-group">新建分组</button><button class="button secondary compact" type="button" data-action="clear-key-groups" ${key.group_ids.length ? "" : "disabled"}>清空分组</button></div>
       </section>
+      <section class="card"><div class="card-head"><h2>有效上游权限</h2><p>统计当前草稿的有效权限；修改后点击保存修改生效。</p></div><div class="effective-profiles">${state.profiles.map((profile) => `<span class="chip ${keyAllowsProfile(key, profile.id) ? "" : "deny"}"><span data-literal>${escapeHTML(profile.displayName || profile.id)}</span><small>${keyAllowsProfile(key, profile.id) ? "允许" : "拒绝"}</small></span>`).join("") || `<p class="provider-empty">${escapeHTML(state.profilesError || "没有可用的上游配置目录。")}</p>`}</div></section>
       <div class="privacy-note">Management Key 复用 CPAMC 已保存的同源会话；完整下游 CPA Key 仅在内存中用于计算 caller scope 和生成首尾脱敏显示，不会写入策略、DOM、浏览器存储或 URL。上游凭据仅在内存中用于复现 CPA profile ID，不会写入策略、DOM、浏览器存储或 URL。</div>`;
-    editor.dataset.keyIndex = String(index);
+  }
+
+  function renderGroupEditor(group) {
+    const staleMembers = state.stalePolicies.filter((policy) => policy.group_ids.includes(group.id)).length;
+    editor.innerHTML = `<header class="editor-head"><div class="editor-title-wrap"><p class="editor-kicker">Access group</p><h1 data-literal>${escapeHTML(group.name)}</h1><p class="editor-subtitle">修改分组规则会影响所有已加入此分组的 Key。</p></div><div class="group-actions"><button class="button secondary compact" type="button" data-action="rename-group">重命名</button><button class="button secondary compact danger-button" type="button" data-action="delete-group">删除分组</button></div></header>
+      ${!state.accessControlEnabled ? '<div class="notice">访问控制已关闭：所有已认证 Key 均可访问全部上游配置。</div>' : ""}
+      <section class="card rules-card"><div class="card-head"><h2>分组上游配置规则</h2><p>允许列表为空时不授予访问权限；拒绝规则在所有分组间优先。</p></div>
+        ${profilePicker("allow_profiles", "允许上游配置", "仅授予列表中的上游配置；空列表不授予权限", group.allow_profiles, false)}
+        ${profilePicker("deny_profiles", "拒绝上游配置", "命中后始终拒绝访问", group.deny_profiles, true)}
+      </section>
+      <section class="card"><div class="card-head"><h2>分组成员</h2><p>可多选 Key 加入当前分组，不影响这些 Key 的其他分组。</p></div>
+        <div class="membership-toolbar"><button class="button secondary compact" type="button" data-action="all-group-keys">选择全部当前 Key</button><button class="button secondary compact" type="button" data-action="clear-group-keys">移除全部当前 Key</button></div>
+        <div class="membership-list">${state.keys.map((key, index) => `<label class="membership-option"><input type="checkbox" data-group-key="${index}" ${key.group_ids.includes(group.id) ? "checked" : ""}><span><strong>${escapeHTML(keyLabel(index))}</strong><small class="mono">${escapeHTML(key.masked)} · ${escapeHTML(key.fingerprint)}</small></span></label>`).join("") || '<p class="provider-empty">CPA 当前没有 API Key</p>'}</div>
+        ${staleMembers ? `<p class="membership-note">${staleMembers} caller scope · <span>失效 Key 的分组成员关系仍保留。</span></p>` : ""}
+      </section>`;
+  }
+
+  function selectedGroup() {
+    return state.groups.find((group) => group.id === state.selectedGroup) || null;
+  }
+
+  function openGroup(id) {
+    state.selectedIndex = -1;
+    state.selectedGroup = id;
+    state.openPicker = "";
+    state.pickerQuery = "";
+    state.pickerScroll = 0;
+    renderAll();
+  }
+
+  function promptGroupName(current = "") {
+    const entered = window.prompt(translateText("输入分组名称（最多 128 个字符）："), current);
+    if (entered === null) return null;
+    const name = entered.trim();
+    if (!name || [...name].length > 128 || state.groups.some((group) => group.id !== (current ? state.selectedGroup : "") && group.name.toLowerCase() === name.toLowerCase())) {
+      showToast("分组名称不能为空、超过 128 个字符或与现有名称重复。", "error");
+      return null;
+    }
+    return name;
+  }
+
+  function createGroup() {
+    const name = promptGroupName();
+    if (!name) return;
+    const random = new Uint8Array(16);
+    window.crypto.getRandomValues(random);
+    const id = `group-${Array.from(random, (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
+    state.groups.push({ id, name, allow_profiles: [], deny_profiles: [] });
+    markDirty();
+    openGroup(id);
+  }
+
+  function deleteGroup() {
+    const group = selectedGroup();
+    if (!group || !window.confirm(translateText("删除分组并从所有 Key 中移除此分组？失去最后一个分组的 Key 将遵循全局默认策略。修改将在保存后生效。"))) return;
+    state.groups = state.groups.filter((candidate) => candidate.id !== group.id);
+    for (const key of state.keys) key.group_ids = key.group_ids.filter((id) => id !== group.id);
+    for (const policy of state.stalePolicies) policy.group_ids = policy.group_ids.filter((id) => id !== group.id);
+    state.selectedGroup = "";
+    markDirty();
+    renderAll();
+  }
+
+  function setKeyMembership(key, groupID, checked) {
+    key.group_ids = checked ? [...new Set([...key.group_ids, groupID])] : key.group_ids.filter((id) => id !== groupID);
+    key.hasPolicy = true;
   }
 
   function profilePicker(kind, title, description, selectedProfiles, deny) {
     const selected = new Set(selectedProfiles);
-    const oppositeProfiles = selectedKey()?.[oppositeProfileKind(kind)] || [];
-    const oppositeTitle = deny ? "允许上游配置" : "拒绝上游配置";
-    const wildcardRules = selectedProfiles.filter((profile) => profile.includes("*") || profile.includes("?"));
-    const wildcardSelected = selected.has("*");
-    const wildcardConflicted = !wildcardSelected && profileRulesConflict("*", oppositeProfiles);
-    const matchedRuleFor = (profile) => wildcardRules.find((rule) => profileRuleMatches(rule, profile)) || "";
-    const effectiveCatalogCount = state.profiles.filter((profile) => selected.has(profile.id) || matchedRuleFor(profile)).length;
+    const matchedCount = state.profiles.filter((profile) => selectedProfiles.some((rule) => profileRuleMatches(rule, profile))).length;
     const isOpen = state.openPicker === kind;
-    const summary = wildcardSelected
-      ? "全部上游配置（*，包含未来新增）"
-      : state.profiles.length
-        ? effectiveCatalogCount ? `已匹配 ${effectiveCatalogCount} / ${state.profiles.length} 个上游配置` : `从 ${state.profiles.length} 个上游配置中选择`
-        : selectedProfiles.length ? `已保留 ${selectedProfiles.length} 条现有规则` : "上游配置目录不可用";
-    const chips = selectedProfiles.length
-      ? selectedProfiles.map((profile) => {
-          const wildcard = profile.includes("*") || profile.includes("?");
-          const outsideCatalog = !wildcard && !state.profiles.some((candidate) => candidate.id === profile);
-          return `<span class="chip ${deny ? "deny" : ""}"><span>${escapeHTML(profile)}</span>${wildcard ? '<small>通配符</small>' : outsideCatalog ? '<small>目录外</small>' : ""}<button class="chip-remove" type="button" data-action="remove-profile" data-kind="${kind}" data-profile="${escapeHTML(profile)}" aria-label="移除此上游配置规则">${icons.close}</button></span>`;
-        }).join("")
-      : '<span class="empty-chips">尚未选择上游配置</span>';
-    const wildcardRow = `<button class="profile-option wildcard-option ${wildcardSelected ? "selected" : ""} ${wildcardConflicted ? "mutually-excluded" : ""}" type="button" role="option" aria-selected="${wildcardSelected}" data-action="toggle-profile" data-kind="${kind}" data-profile="*" data-conflicted="${wildcardConflicted}" data-search="全部上游配置 all profiles wildcard *">
-      <span class="profile-checkbox" aria-hidden="true">${wildcardSelected ? icons.check : ""}</span>
-      <span class="profile-option-copy"><strong>全部上游配置</strong><small>${wildcardConflicted ? `点击将清空${oppositeTitle}规则` : deny ? "* · 此 Key 将无法访问任何上游配置" : "* · 自动包含未来新增上游配置"}</small></span>
-      <span class="profile-badge">通配符</span>
-    </button>`;
-    const commonWildcards = [];
-    const presetRows = commonWildcards.filter((rule) => selected.has(rule) || state.profiles.some((profile) => profileRuleMatches(rule, profile))).map((rule) => {
-      const explicit = selected.has(rule);
-      const derived = wildcardSelected && !explicit;
-      const checked = explicit || derived;
-      const conflicted = !checked && profileRulesConflict(rule, oppositeProfiles);
-      const matchCount = state.profiles.filter((profile) => profileRuleMatches(rule, profile)).length;
-      return `<button class="profile-option preset-option ${checked ? "selected" : ""} ${derived ? "derived" : ""} ${conflicted ? "mutually-excluded" : ""}" type="button" role="option" aria-selected="${checked}" data-action="toggle-profile" data-kind="${kind}" data-profile="${rule}" data-derived="${derived}" data-conflicted="${conflicted}" data-search="${rule} 通配符 wildcard">
-        <span class="profile-checkbox" aria-hidden="true">${checked ? icons.check : ""}</span>
-        <span class="profile-option-copy"><strong>${rule}</strong><small>${conflicted ? `点击将从${oppositeTitle}中移除冲突规则` : `当前匹配 ${matchCount} 个上游配置，并覆盖未来同前缀上游配置`}</small></span>
-        <span class="profile-badge">通配符</span>
-      </button>`;
-    }).join("");
+    const summary = selected.has("*") ? "全部上游配置（*，包含未来新增）"
+      : state.profiles.length ? `已匹配 ${matchedCount} / ${state.profiles.length} 个上游配置`
+      : selectedProfiles.length ? `已保留 ${selectedProfiles.length} 条现有规则` : "上游配置目录不可用";
+    const chips = selectedProfiles.map((rule) => {
+      const wildcard = rule.includes("*") || rule.includes("?");
+      const outsideCatalog = !wildcard && !state.profiles.some((profile) => profileRuleMatches(rule, profile));
+      return `<span class="chip ${deny ? "deny" : ""}"><span data-literal>${escapeHTML(rule)}</span>${wildcard ? '<small>通配符</small>' : outsideCatalog ? '<small>目录外</small>' : ""}<button class="chip-remove" type="button" data-action="remove-profile" data-kind="${kind}" data-profile="${escapeHTML(rule)}" aria-label="移除此上游配置规则">${icons.close}</button></span>`;
+    }).join("") || '<span class="empty-chips">尚未选择上游配置</span>';
+    const wildcardRow = `<button class="profile-option wildcard-option ${selected.has("*") ? "selected" : ""}" type="button" role="option" aria-selected="${selected.has("*")}" data-action="toggle-profile" data-kind="${kind}" data-profile="*" data-search="全部上游配置 all providers wildcard *"><span class="profile-checkbox" aria-hidden="true">${selected.has("*") ? icons.check : ""}</span><span class="profile-option-copy"><strong>全部上游配置</strong><small>* · 自动包含未来新增上游配置</small></span><span class="profile-badge">通配符</span></button>`;
     const rows = state.profiles.map((profile) => {
-      const explicit = selected.has(profile.id);
-      const matchedRule = explicit ? "" : matchedRuleFor(profile);
-      const derived = Boolean(matchedRule);
-      const checked = explicit || derived;
-      const conflicted = !checked && profileRulesConflict(profile.id, oppositeProfiles);
-      return `<button class="profile-option ${checked ? "selected" : ""} ${derived ? "derived" : ""} ${conflicted ? "mutually-excluded" : ""}" type="button" role="option" aria-selected="${checked}" data-action="toggle-profile" data-kind="${kind}" data-profile="${escapeHTML(profile.id)}" data-derived="${derived}" data-matched-rule="${escapeHTML(matchedRule)}" data-conflicted="${conflicted}" data-search="${escapeHTML(`${profile.id} ${profile.provider} ${profile.displayName}`.toLowerCase())}">
-        <span class="profile-checkbox" aria-hidden="true">${checked ? icons.check : ""}</span>
-        <span class="profile-option-copy"><strong>${escapeHTML(profile.displayName || profile.id)}</strong><small>${escapeHTML(profile.id)}</small>${derived ? `<small>${conflicted ? `点击将从${oppositeTitle}中移除冲突规则并取消此匹配` : `点击将取消${escapeHTML(matchedRule)}匹配`}</small>` : conflicted ? `<small>点击将从${oppositeTitle}中移除冲突规则</small>` : ""}</span>
-        <span class="profile-badge">${escapeHTML(profile.kind === "oauth" ? "OAuth" : profile.provider || "API")}</span>
-      </button>`;
+      const explicitRule = selected.has(profile.id) ? profile.id : profile.legacyID && selected.has(profile.legacyID) ? profile.legacyID : "";
+      const explicit = Boolean(explicitRule);
+      const matchedRule = explicit ? "" : selectedProfiles.find((rule) => profileRuleMatches(rule, profile));
+      const checked = explicit || Boolean(matchedRule);
+      return `<button class="profile-option ${checked ? "selected" : ""} ${matchedRule ? "derived" : ""}" type="button" role="option" aria-selected="${checked}" ${matchedRule ? 'disabled title="由通配符匹配；移除通配符后可单独选择。"' : ""} data-action="toggle-profile" data-kind="${kind}" data-profile="${escapeHTML(explicitRule || profile.id)}" data-search="${escapeHTML(`${profile.id} ${profile.provider} ${profile.displayName}`.toLowerCase())}"><span class="profile-checkbox" aria-hidden="true">${checked ? icons.check : ""}</span><span class="profile-option-copy"><strong data-literal>${escapeHTML(profile.displayName || profile.id)}</strong><small>${escapeHTML(profile.id)}</small>${matchedRule ? `<small>${escapeHTML(matchedRule)}</small>` : ""}</span><span class="profile-badge">${escapeHTML(profile.kind === "oauth" ? "OAuth" : profile.provider || "API")}</span></button>`;
     }).join("");
-
-    return `<div class="profile-editor ${deny ? "deny" : ""}">
-      <div class="tag-head"><div><strong>${escapeHTML(title)}</strong><span>${escapeHTML(description)}</span></div><span class="selection-count">${selectedProfiles.length} 条规则</span></div>
-      <button class="profile-trigger ${isOpen ? "open" : ""}" type="button" data-action="toggle-picker" data-kind="${kind}" aria-expanded="${isOpen}">
-        <span>${escapeHTML(summary)}</span><span class="picker-chevron" aria-hidden="true">⌄</span>
-        ${state.profiles.length ? `<progress class="selection-meter" max="${state.profiles.length}" value="${effectiveCatalogCount}" aria-label="已匹配 ${effectiveCatalogCount} / ${state.profiles.length} 个上游配置"></progress>` : ""}
-      </button>
-      ${isOpen ? `<div class="profile-panel">
-        ${state.profiles.length ? `<div class="profile-search"><span>${icons.search}</span><input type="search" data-profile-search="${kind}" value="${escapeHTML(state.pickerQuery)}" autocomplete="off" placeholder="搜索上游配置…" aria-label="搜索${escapeHTML(title)}"></div>
-        <div class="profile-list" role="listbox" aria-multiselectable="true">${wildcardRow}${presetRows}${rows}<p class="profile-empty" hidden>没有匹配的上游配置</p></div>
-        <div class="profile-panel-footer"><span>已匹配 ${effectiveCatalogCount} / ${state.profiles.length}</span><div><button type="button" data-action="select-all-profiles" data-kind="${kind}">全选可用配置</button><button type="button" data-action="clear-profiles" data-kind="${kind}">清空</button></div></div>`
-        : `<div class="profile-list compact" role="listbox" aria-multiselectable="true">${wildcardRow}</div><div class="catalog-notice"><span>${escapeHTML(state.profilesError || "没有可用上游配置目录。")}</span><button type="button" data-action="refresh-profiles">重新加载</button></div>`}
-      </div>` : ""}
-      <div class="chips">${chips}</div>
-    </div>`;
+    return `<div class="profile-editor ${deny ? "deny" : ""}"><div class="tag-head"><div><strong>${escapeHTML(title)}</strong><span>${escapeHTML(description)}</span></div><span class="selection-count">${selectedProfiles.length} 条规则</span></div>
+      <button class="profile-trigger ${isOpen ? "open" : ""}" type="button" data-action="toggle-picker" data-kind="${kind}" aria-expanded="${isOpen}"><span>${escapeHTML(summary)}</span><span class="picker-chevron" aria-hidden="true">⌄</span>${state.profiles.length ? `<progress class="selection-meter" max="${state.profiles.length}" value="${matchedCount}" aria-label="已匹配 ${matchedCount} / ${state.profiles.length} 个上游配置"></progress>` : ""}</button>
+      ${isOpen ? `<div class="profile-panel"><div class="profile-search"><span>${icons.search}</span><input type="search" data-profile-search="${kind}" value="${escapeHTML(state.pickerQuery)}" autocomplete="off" placeholder="搜索上游配置…" aria-label="搜索${escapeHTML(title)}"></div><div class="profile-list" role="listbox" aria-label="${escapeHTML(title)}" aria-multiselectable="true">${wildcardRow}${rows}<p class="profile-empty" hidden>没有匹配的上游配置</p></div><div class="profile-panel-footer"><span>已匹配 ${matchedCount} / ${state.profiles.length}</span><div><button type="button" data-action="select-all-profiles" data-kind="${kind}" ${state.profiles.length ? "" : "disabled"}>全选可用配置</button><button type="button" data-action="clear-profiles" data-kind="${kind}">清空</button></div></div>${state.profilesError ? `<div class="catalog-notice"><span>${escapeHTML(state.profilesError)}</span><button type="button" data-action="refresh-profiles">重新加载</button></div>` : ""}</div>` : ""}
+      <div class="chips">${chips}</div></div>`;
   }
 
   function formatDate(value) {
@@ -1219,7 +1214,7 @@
 
   function updateProfiles(kind, updater) {
     if (state.busy || !validProfileKind(kind)) return;
-    const key = selectedKey();
+    const key = selectedGroup();
     if (!key) return;
     const currentList = editor.querySelector(`[data-profile-search="${kind}"]`)?.closest(".profile-panel")?.querySelector(".profile-list");
     state.pickerScroll = currentList?.scrollTop || 0;
@@ -1227,63 +1222,20 @@
     if (nextProfiles.length === key[kind].length && nextProfiles.every((profile, index) => profile === key[kind][index])) return;
     key[kind] = nextProfiles;
     markDirty();
+    scheduleNavRender();
     renderEditor();
     if (state.openPicker === kind) restorePickerView(kind, true);
   }
 
-  function removeConflictingRules(rules, profileID) {
-    return rules.filter((rule) => !profileRulesConflict(rule, [profileID]));
-  }
-
-  function expandWildcardForException(rules, excludedProfileID) {
-    const wildcardRules = rules.filter((rule) => rule.includes("*") || rule.includes("?"));
-    if (!wildcardRules.length) return rules;
-    const explicitRules = rules.filter((rule) => !rule.includes("*") && !rule.includes("?") && rule !== excludedProfileID);
-    const expanded = state.profiles
-      .filter((profile) => profile.id !== excludedProfileID && wildcardRules.some((rule) => profilePatternMatches(rule, profile.id)))
-      .map((profile) => profile.id);
-    return normalizeProfiles([...explicitRules, ...expanded]);
-  }
-
-  function toggleProfileRule(kind, profileID, derived = false) {
-    if (state.busy || !validProfileKind(kind)) return;
-    const key = selectedKey();
-    if (!key || !profileID) return;
-    const oppositeKind = oppositeProfileKind(kind);
-    const current = [...key[kind]];
-    const opposite = [...key[oppositeKind]];
-    const currentHasRule = current.includes(profileID);
-
-    if (currentHasRule) {
-      key[kind] = current.filter((rule) => rule !== profileID);
-    } else if (derived || current.some((rule) => (rule.includes("*") || rule.includes("?")) && profilePatternMatches(rule, profileID))) {
-      // Turn a wildcard selection into explicit current-catalog rules so one
-      // profile can be switched off without leaving the wildcard in place.
-      key[kind] = expandWildcardForException(current, profileID);
-      key[oppositeKind] = removeConflictingRules(opposite, profileID);
-    } else if (profileID === "*") {
-      key[kind] = ["*"];
-      key[oppositeKind] = [];
-    } else {
-      key[kind] = normalizeProfiles([...current, profileID]);
-      key[oppositeKind] = removeConflictingRules(opposite, profileID);
-    }
-    markDirty();
-    renderEditor();
-    if (state.openPicker === kind) restorePickerView(kind, true);
+  function toggleProfileRule(kind, profileID) {
+    if (!profileID) return;
+    // Allow and deny lists remain independent. An explicit deny takes priority,
+    // including when the allow list contains a wildcard.
+    updateProfiles(kind, (rules) => rules.includes(profileID) ? rules.filter((rule) => rule !== profileID) : [...rules, profileID]);
   }
 
   function selectAllProfiles(kind) {
-    if (state.busy || !validProfileKind(kind)) return;
-    const key = selectedKey();
-    if (!key) return;
-    const oppositeKind = oppositeProfileKind(kind);
-    const profileIDs = state.profiles.map((profile) => profile.id).filter(Boolean);
-    key[kind] = normalizeProfiles([...key[kind], ...profileIDs]);
-    key[oppositeKind] = key[oppositeKind].filter((rule) => !profileIDs.some((profileID) => profileRulesConflict(rule, [profileID])));
-    markDirty();
-    renderEditor();
-    if (state.openPicker === kind) restorePickerView(kind, true);
+    updateProfiles(kind, (rules) => [...rules, ...state.profiles.map((profile) => profile.id)]);
   }
 
   function filterProfilePicker(input) {
@@ -1318,8 +1270,6 @@
       const result = await fetchCurrentKeys({ includeCatalog: true });
       state.profiles = result.catalog?.profiles || [];
       state.profilesError = result.catalog?.error || "";
-      state.reconcileNotice = "";
-      reconcileProfilePolicies();
       renderEditor();
       showToast(state.profiles.length ? `已加载 ${state.profiles.length} 个上游配置` : state.profilesError, state.profiles.length ? "success" : "error");
     } finally {
@@ -1329,17 +1279,15 @@
   }
 
   function serializablePolicy() {
-    const active = state.keys.filter(hasRules).map((key) => ({
-      caller_scope: key.scope,
-      allow_profiles: [...key.allow_profiles],
-      deny_profiles: [...key.deny_profiles]
-    }));
-    const stale = state.stalePolicies.map((policy) => ({
-      caller_scope: policy.caller_scope,
-      allow_profiles: [...policy.allow_profiles],
-      deny_profiles: [...policy.deny_profiles]
-    }));
-    return { version: 2, policies: [...active, ...stale] };
+    const active = state.keys.filter((key) => key.hasPolicy || hasRules(key)).map((key) => ({ caller_scope: key.scope, group_ids: [...key.group_ids] }));
+    const stale = state.stalePolicies.map((policy) => ({ caller_scope: policy.caller_scope, group_ids: [...policy.group_ids] }));
+    return {
+      version: 3,
+      access_control_enabled: state.accessControlEnabled,
+      default_deny: state.defaultDeny,
+      groups: state.groups.map((group) => ({ id: group.id, name: group.name, allow_profiles: [...group.allow_profiles], deny_profiles: [...group.deny_profiles] })),
+      policies: [...active, ...stale]
+    };
   }
 
   function scopeSet(keys) {
@@ -1353,9 +1301,10 @@
   }
 
   async function save() {
-    if (!state.dirty || state.busy) return;
+    if (!state.dirty || state.busy || state.profileBusy) return;
     const expectedRevision = state.revision;
     const submittedPolicy = serializablePolicy();
+    const preferredScope = selectedKey()?.scope || "";
     setBusy(true, "save");
     try {
       const latestKeys = await fetchCurrentKeys();
@@ -1375,17 +1324,19 @@
       try {
         const keysAfterSave = await fetchCurrentKeys();
         keySetChangedAfterSave = !setsEqual(scopeSet(state.keys), scopeSet(keysAfterSave));
-        if (keySetChangedAfterSave) state.keys = keysAfterSave;
+        if (keySetChangedAfterSave) {
+          state.keys = keysAfterSave;
+          state.selectedIndex = preferredScope ? state.keys.findIndex((key) => key.scope === preferredScope) : -1;
+        }
       } catch (verificationError) {
         postSaveCheckError = verificationError;
       }
       applyPolicyDocument(response?.policy || submittedPolicy);
       state.revision = Number(response?.revision ?? expectedRevision + 1);
       state.dirty = false;
-      state.reconcileNotice = "";
       renderAll();
       if (keySetChangedAfterSave) {
-        showToast("策略已保存，但 CPA Key 列表在保存期间发生变化；新 Key 当前默认允许全部上游配置，请立即检查。", "error");
+        showToast("策略已保存，但 CPA Key 列表在保存期间发生变化；新 Key 遵循全局默认策略，请检查分组。", "error");
       } else if (postSaveCheckError) {
         showToast(`策略已保存，但无法复核 CPA Key 列表：${postSaveCheckError.message}`, "error");
       } else {
@@ -1432,11 +1383,14 @@
   }
 
   function policiesEquivalent(leftRaw, rightRaw) {
-    const canonical = (raw) => normalizePolicyDocument(raw).policies.map((policy) => ({
-      caller_scope: policy.caller_scope,
-      allow_profiles: [...policy.allow_profiles].sort(),
-      deny_profiles: [...policy.deny_profiles].sort()
-    })).sort((left, right) => left.caller_scope.localeCompare(right.caller_scope));
+    const canonical = (raw) => {
+      const doc = normalizePolicyDocument(raw);
+      return {
+        ...doc,
+        groups: doc.groups.map((group) => ({ ...group, allow_profiles: [...group.allow_profiles].sort(), deny_profiles: [...group.deny_profiles].sort() })).sort((left, right) => left.id.localeCompare(right.id)),
+        policies: doc.policies.map((policy) => ({ caller_scope: policy.caller_scope, group_ids: [...policy.group_ids].sort() })).sort((left, right) => left.caller_scope.localeCompare(right.caller_scope))
+      };
+    };
     return JSON.stringify(canonical(leftRaw)) === JSON.stringify(canonical(rightRaw));
   }
 
@@ -1518,7 +1472,6 @@
   }
 
   function initializeChrome() {
-    state.profileCache = loadProfileCache();
     document.documentElement.classList.toggle("is-embedded", window.self !== window.top);
     $("#searchIcon").innerHTML = icons.search;
     refreshDataButton.innerHTML = icons.refresh;
@@ -1564,6 +1517,9 @@
     if (state.busy) return;
     const item = event.target.closest("[data-select]");
     if (!item) return;
+    if (item.dataset.select === "create-group") { createGroup(); return; }
+    if (item.dataset.select === "group") { openGroup(item.dataset.group); return; }
+    state.selectedGroup = "";
     state.selectedIndex = item.dataset.select === "overview" ? -1 : Number(item.dataset.index);
     state.openPicker = "";
     state.pickerQuery = "";
@@ -1578,7 +1534,28 @@
     if (!target) return;
     const action = target.dataset.action;
     const kind = target.dataset.kind;
-    if (action === "toggle-picker" && validProfileKind(kind)) {
+    if (action === "create-group") {
+      createGroup();
+    } else if (action === "open-group") {
+      openGroup(target.dataset.group);
+    } else if (action === "rename-group") {
+      const group = selectedGroup();
+      if (!group) return;
+      const name = promptGroupName(group.name);
+      if (name && name !== group.name) { group.name = name; markDirty(); renderAll(); }
+    } else if (action === "delete-group") {
+      deleteGroup();
+    } else if (action === "clear-key-groups") {
+      const key = selectedKey();
+      if (!key) return;
+      key.group_ids = []; key.hasPolicy = true;
+      markDirty(); renderAll();
+    } else if (action === "all-group-keys" || action === "clear-group-keys") {
+      const group = selectedGroup();
+      if (!group) return;
+      for (const key of state.keys) setKeyMembership(key, group.id, action === "all-group-keys");
+      markDirty(); renderAll();
+    } else if (action === "toggle-picker" && validProfileKind(kind)) {
       const opening = state.openPicker !== kind;
       state.openPicker = opening ? kind : "";
       if (opening) { state.pickerQuery = ""; state.pickerScroll = 0; }
@@ -1595,6 +1572,36 @@
     } else if (action === "refresh-profiles") {
       refreshProfileCatalog().catch((error) => showToast(error.message, "error"));
     }
+  });
+
+  editor.addEventListener("change", (event) => {
+    if (state.busy) return;
+    const input = event.target;
+    const listScroll = input.closest(".membership-list")?.scrollTop || 0;
+    let focusSelector = "";
+    if (input.matches("[data-setting]")) {
+      const setting = input.dataset.setting;
+      if (setting !== "accessControlEnabled" && setting !== "defaultDeny") return;
+      state[setting] = input.checked;
+      focusSelector = `[data-setting="${setting}"]`;
+    } else if (input.matches("[data-key-group]")) {
+      const key = selectedKey();
+      if (!key || !state.groups.some((group) => group.id === input.dataset.keyGroup)) return;
+      setKeyMembership(key, input.dataset.keyGroup, input.checked);
+      focusSelector = `[data-key-group="${input.dataset.keyGroup}"]`;
+    } else if (input.matches("[data-group-key]")) {
+      const group = selectedGroup();
+      const key = state.keys[Number(input.dataset.groupKey)];
+      if (!group || !key) return;
+      setKeyMembership(key, group.id, input.checked);
+      focusSelector = `[data-group-key="${input.dataset.groupKey}"]`;
+    } else return;
+    markDirty();
+    renderAll();
+    const replacement = editor.querySelector(focusSelector);
+    const list = replacement?.closest(".membership-list");
+    if (list) list.scrollTop = listScroll;
+    replacement?.focus({ preventScroll: true });
   });
 
   editor.addEventListener("input", (event) => {

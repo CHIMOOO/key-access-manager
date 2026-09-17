@@ -30,6 +30,7 @@ build:
 
 test:
 	go test ./...
+	node --test web/settings.test.cjs
 
 vet:
 	go vet ./...
@@ -38,6 +39,7 @@ check:
 	gofmt -w *.go .github/scripts/*.go
 	go vet ./...
 	go test -race ./...
+	node --test web/settings.test.cjs
 
 package: build
 	go run ./.github/scripts/package-release.go -library "$(PLUGIN_OUTPUT)" -archive "$(ARCHIVE_PATH)" -checksum "$(CHECKSUM_PATH)"

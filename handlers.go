@@ -33,9 +33,12 @@ func interceptRequest(raw []byte, afterAuth bool) ([]byte, error) {
 	if snapshot.BlockAll {
 		return terminatedPolicyResponse(http.StatusForbidden, "profile access policy is unavailable", "")
 	}
+	if !snapshot.AccessControlEnabled {
+		return okEnvelope(requestInterceptResponse{})
+	}
 
 	scope, hasScope := callerScopeFromMetadata(req.Metadata)
-	if len(snapshot.ByCallerScope) > 0 && !hasScope {
+	if (snapshot.DefaultDeny || len(snapshot.ByCallerScope) > 0) && !hasScope {
 		return terminatedPolicyResponse(http.StatusForbidden, "profile access identity is unavailable", "")
 	}
 	if !hasScope {
@@ -43,6 +46,9 @@ func interceptRequest(raw []byte, afterAuth bool) ([]byte, error) {
 	}
 	policy, configured := snapshot.ByCallerScope[scope]
 	if !configured {
+		if snapshot.DefaultDeny {
+			return terminatedPolicyResponse(http.StatusForbidden, "API key has no assigned access group", "")
+		}
 		return okEnvelope(requestInterceptResponse{})
 	}
 	if !afterAuth {
@@ -53,7 +59,7 @@ func interceptRequest(raw []byte, afterAuth bool) ([]byte, error) {
 	if profile == "" {
 		return terminatedPolicyResponse(http.StatusForbidden, "selected profile is unavailable for policy evaluation", "")
 	}
-	if !policyAllowsCandidateWithLegacy(policy, profile, "", globalState.legacyAlias(scope, profile)) && !globalState.isAutoAllowed(scope, profile) {
+	if !policyAllowsCandidateWithLegacy(policy, profile, "", globalState.legacyAlias(scope, profile)) {
 		globalState.recordRuntimeWarning(selectedDeniedWarning)
 		return terminatedPolicyResponse(http.StatusForbidden, "profile is not allowed for this API key", profile)
 	}
@@ -70,12 +76,18 @@ func pickProfile(raw []byte) ([]byte, error) {
 	if snapshot.BlockAll {
 		return errorEnvelope("profile_policy_unavailable", "profile access policy is unavailable", http.StatusForbidden), nil
 	}
+	if !snapshot.AccessControlEnabled {
+		return okEnvelope(schedulerPickResponse{Handled: false})
+	}
 	scope, hasScope := callerScopeFromMetadata(req.Options.Metadata)
-	if len(snapshot.ByCallerScope) > 0 && !hasScope {
+	if (snapshot.DefaultDeny || len(snapshot.ByCallerScope) > 0) && !hasScope {
 		return errorEnvelope("profile_identity_unavailable", "profile access identity is unavailable", http.StatusForbidden), nil
 	}
 	policy, configured := snapshot.ByCallerScope[scope]
 	if !configured {
+		if snapshot.DefaultDeny {
+			return errorEnvelope("profile_access_denied", "API key has no assigned access group", http.StatusForbidden), nil
+		}
 		return okEnvelope(schedulerPickResponse{Handled: false})
 	}
 	eligible := make([]schedulerAuthCandidate, 0, len(req.Candidates))
@@ -84,19 +96,6 @@ func pickProfile(raw []byte) ([]byte, error) {
 		if candidate.ID != "" && policyAllowsSchedulerCandidate(policy, candidate) {
 			eligible = append(eligible, candidate)
 			globalState.rememberLegacyAlias(scope, candidate.ID, legacyAPIKeyProfileID(candidate))
-		}
-	}
-	if len(eligible) == 0 && len(policy.AllowProfiles) > 0 {
-		// CPA may rotate a profile ID while retaining the same provider. If the
-		// current tier has no allow-list match, adopt current non-denied profiles
-		// transiently so requests continue; the dashboard reconciler persists the
-		// new IDs after the operator reviews and saves the policy.
-		for _, candidate := range req.Candidates {
-			if candidate.ID == "" || !policyAllowsCandidateWithLegacies(runtimePolicy{DenyProfiles: policy.DenyProfiles}, candidate.ID, candidate.Provider, []string{legacyAPIKeyProfileID(candidate)}) {
-				continue
-			}
-			eligible = append(eligible, candidate)
-			globalState.rememberAutoAllowed(scope, candidate.ID)
 		}
 	}
 	if len(eligible) == 0 {
@@ -147,15 +146,15 @@ func managementRegistration() managementRegistrationResponse {
 	return managementRegistrationResponse{
 		Routes: []managementRoute{
 			{Method: http.MethodGet, Path: statusPath, Description: "Show key-provider-access status without exposing API keys or caller scopes."},
-			{Method: http.MethodGet, Path: policiesPath, Description: "List caller-scope profile policies."},
-			{Method: http.MethodPut, Path: policiesPath, Description: "Replace all caller-scope profile policies."},
+			{Method: http.MethodGet, Path: policiesPath, Description: "List access groups, key memberships and global settings."},
+			{Method: http.MethodPut, Path: policiesPath, Description: "Replace access groups, key memberships and global settings."},
 			{Method: http.MethodPost, Path: reloadPath, Description: "Reload policies from policy_file."},
 			{Method: http.MethodPost, Path: initializeStoragePath, Description: "Create or validate the default plugin-owned TOML policy file."},
 		},
 		Resources: []resourceRoute{{
 			Path:        "/settings",
-			Menu:        "Key Provider Access",
-			Description: "Manage per-key profile access policies in a browser.",
+			Menu:        "Key Access Manager",
+			Description: "Manage group-based upstream access in a browser.",
 		}},
 	}
 }
@@ -190,14 +189,22 @@ func managementStatus() ([]byte, error) {
 	globalState.mu.RLock()
 	runtimeWarning := globalState.runtimeWarning
 	globalState.mu.RUnlock()
+	unconfiguredAction := "allow"
+	if snapshot.AccessControlEnabled && snapshot.DefaultDeny {
+		unconfiguredAction = "deny"
+	}
 	return managementJSON(http.StatusOK, map[string]any{
 		"plugin":                  pluginID,
 		"version":                 pluginVersion,
 		"schema_version":          schemaVersion,
+		"policy_version":          policyVersion,
 		"host_schema_version":     hostSchema,
 		"auth_mode":               "cpa_builtin_api_keys",
 		"identity_source":         "Metadata.caller_scope",
-		"unconfigured_key_action": "allow",
+		"unconfigured_key_action": unconfiguredAction,
+		"access_control_enabled":  snapshot.AccessControlEnabled,
+		"default_deny":            snapshot.DefaultDeny,
+		"group_count":             len(cfg.Groups),
 		"last_error":              lastError,
 		"runtime_warning":         runtimeWarning,
 		"policy_count":            len(snapshot.ByCallerScope),
@@ -212,7 +219,7 @@ func managementStatus() ([]byte, error) {
 
 func managementPolicies() ([]byte, error) {
 	cfg, snapshot, source, updatedAt, _, _, revision := globalState.currentWithRevision()
-	document := policyDocument{Version: int(schemaVersion), Policies: []policyConfig{}}
+	_, document, _ := compileDocument(policyDocument{Version: policyVersion})
 	if !snapshot.BlockAll {
 		document = documentFromConfig(cfg)
 	}
@@ -254,6 +261,9 @@ func managementReplacePolicies(body []byte, ifMatch string) ([]byte, error) {
 	if err := ensureJSONEOF(decoder); err != nil {
 		return managementJSON(http.StatusBadRequest, map[string]any{"error": err.Error()})
 	}
+	if document.Version != policyVersion {
+		return managementJSON(http.StatusUnprocessableEntity, map[string]any{"error": "Management API requires policy version 3 with group-based authorization"})
+	}
 	snapshot, sanitized, err := compileDocument(document)
 	if err != nil {
 		return managementJSON(http.StatusUnprocessableEntity, map[string]any{"error": err.Error()})
@@ -265,8 +275,7 @@ func managementReplacePolicies(body []byte, ifMatch string) ([]byte, error) {
 			return managementJSON(http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		}
 	}
-	cfg.Version = sanitized.Version
-	cfg.Policies = clonePolicyConfigs(sanitized.Policies)
+	applyDocumentToConfig(&cfg, sanitized)
 	source := "Management API (memory only)"
 	if cfg.PolicyFile != "" {
 		source = cfg.PolicyFile
@@ -412,8 +421,7 @@ func managementReload() ([]byte, error) {
 		globalState.recordPolicyError(err)
 		return managementJSON(http.StatusUnprocessableEntity, map[string]any{"error": err.Error()})
 	}
-	cfg.Version = sanitized.Version
-	cfg.Policies = clonePolicyConfigs(sanitized.Policies)
+	applyDocumentToConfig(&cfg, sanitized)
 	globalState.replace(cfg, snapshot, cfg.PolicyFile)
 	return managementJSON(http.StatusOK, map[string]any{
 		"ok": true, "policy_count": len(snapshot.ByCallerScope), "revision": globalState.policyRevision(),

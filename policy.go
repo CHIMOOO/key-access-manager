@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/BurntSushi/toml"
 	"gopkg.in/yaml.v3"
@@ -22,21 +23,36 @@ import (
 const maxPolicyFileSize = 2 << 20
 
 type pluginConfig struct {
-	Enabled    *bool          `json:"enabled,omitempty" yaml:"enabled,omitempty"`
-	Priority   int            `json:"priority,omitempty" yaml:"priority,omitempty"`
-	Store      any            `json:"store,omitempty" yaml:"store,omitempty"`
-	PolicyFile string         `json:"policy_file,omitempty" yaml:"policy_file,omitempty"`
-	Version    int            `json:"version,omitempty" yaml:"version,omitempty"`
-	Policies   []policyConfig `json:"policies,omitempty" yaml:"policies,omitempty"`
+	Enabled              *bool          `json:"enabled,omitempty" yaml:"enabled,omitempty"`
+	Priority             int            `json:"priority,omitempty" yaml:"priority,omitempty"`
+	Store                any            `json:"store,omitempty" yaml:"store,omitempty"`
+	PolicyFile           string         `json:"policy_file,omitempty" yaml:"policy_file,omitempty"`
+	Version              int            `json:"version,omitempty" yaml:"version,omitempty"`
+	AccessControlEnabled *bool          `json:"access_control_enabled,omitempty" yaml:"access_control_enabled,omitempty"`
+	DefaultDeny          *bool          `json:"default_deny,omitempty" yaml:"default_deny,omitempty"`
+	Groups               []groupConfig  `json:"groups,omitempty" yaml:"groups,omitempty"`
+	Policies             []policyConfig `json:"policies,omitempty" yaml:"policies,omitempty"`
 }
 
 type policyDocument struct {
-	Version  int            `json:"version" yaml:"version" toml:"version"`
-	Policies []policyConfig `json:"policies" yaml:"policies" toml:"policies"`
+	Version              int            `json:"version" yaml:"version" toml:"version"`
+	AccessControlEnabled *bool          `json:"access_control_enabled" yaml:"access_control_enabled" toml:"access_control_enabled"`
+	DefaultDeny          *bool          `json:"default_deny" yaml:"default_deny" toml:"default_deny"`
+	Groups               []groupConfig  `json:"groups" yaml:"groups" toml:"groups"`
+	Policies             []policyConfig `json:"policies" yaml:"policies" toml:"policies"`
 }
 
 type policyConfig struct {
-	CallerScope   string   `json:"caller_scope" yaml:"caller_scope" toml:"caller_scope"`
+	CallerScope string   `json:"caller_scope" yaml:"caller_scope" toml:"caller_scope"`
+	GroupIDs    []string `json:"group_ids" yaml:"group_ids" toml:"group_ids"`
+	// These fields are accepted only while migrating existing v2 documents.
+	AllowProfiles []string `json:"allow_profiles,omitempty" yaml:"allow_profiles,omitempty" toml:"allow_profiles,omitempty"`
+	DenyProfiles  []string `json:"deny_profiles,omitempty" yaml:"deny_profiles,omitempty" toml:"deny_profiles,omitempty"`
+}
+
+type groupConfig struct {
+	ID            string   `json:"id" yaml:"id" toml:"id"`
+	Name          string   `json:"name" yaml:"name" toml:"name"`
 	AllowProfiles []string `json:"allow_profiles" yaml:"allow_profiles" toml:"allow_profiles"`
 	DenyProfiles  []string `json:"deny_profiles" yaml:"deny_profiles" toml:"deny_profiles"`
 }
@@ -47,8 +63,10 @@ type runtimePolicy struct {
 }
 
 type policySnapshot struct {
-	ByCallerScope map[string]runtimePolicy
-	BlockAll      bool
+	ByCallerScope        map[string]runtimePolicy
+	AccessControlEnabled bool
+	DefaultDeny          bool
+	BlockAll             bool
 }
 
 type state struct {
@@ -64,16 +82,15 @@ type state struct {
 	revision       uint64
 	pickCursor     map[string]uint64
 	legacyAliases  map[string]map[string]string
-	autoAllowed    map[string]map[string]struct{}
 }
 
 var (
-	globalState = state{snapshot: failClosedSnapshot(), pickCursor: make(map[string]uint64), legacyAliases: make(map[string]map[string]string), autoAllowed: make(map[string]map[string]struct{})}
+	globalState = state{snapshot: failClosedSnapshot(), pickCursor: make(map[string]uint64), legacyAliases: make(map[string]map[string]string)}
 	mutationMu  sync.Mutex
 )
 
 func failClosedSnapshot() policySnapshot {
-	return policySnapshot{ByCallerScope: make(map[string]runtimePolicy), BlockAll: true}
+	return policySnapshot{ByCallerScope: make(map[string]runtimePolicy), AccessControlEnabled: true, DefaultDeny: true, BlockAll: true}
 }
 
 func (s *state) clear() {
@@ -90,7 +107,6 @@ func (s *state) clear() {
 	s.revision = 0
 	s.pickCursor = make(map[string]uint64)
 	s.legacyAliases = make(map[string]map[string]string)
-	s.autoAllowed = make(map[string]map[string]struct{})
 }
 
 func (s *state) current() (pluginConfig, policySnapshot, string, time.Time, uint32, string) {
@@ -117,7 +133,6 @@ func (s *state) replace(cfg pluginConfig, snapshot policySnapshot, source string
 	s.runtimeWarning = ""
 	s.revision++
 	s.legacyAliases = make(map[string]map[string]string)
-	s.autoAllowed = make(map[string]map[string]struct{})
 }
 
 func (s *state) policyRevision() uint64 {
@@ -148,30 +163,6 @@ func (s *state) legacyAlias(scope, current string) string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.legacyAliases[strings.TrimSpace(scope)][strings.TrimSpace(current)]
-}
-
-func (s *state) rememberAutoAllowed(scope, profile string) {
-	scope = strings.TrimSpace(scope)
-	profile = strings.TrimSpace(profile)
-	if scope == "" || profile == "" {
-		return
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.autoAllowed == nil {
-		s.autoAllowed = make(map[string]map[string]struct{})
-	}
-	if s.autoAllowed[scope] == nil {
-		s.autoAllowed[scope] = make(map[string]struct{})
-	}
-	s.autoAllowed[scope][profile] = struct{}{}
-}
-
-func (s *state) isAutoAllowed(scope, profile string) bool {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	_, ok := s.autoAllowed[strings.TrimSpace(scope)][strings.TrimSpace(profile)]
-	return ok
 }
 
 func (s *state) setHostSchema(schema uint32) {
@@ -225,7 +216,7 @@ func configure(raw []byte) error {
 	if err := decodeJSON(raw, &req); err != nil {
 		return err
 	}
-	cfg := pluginConfig{Version: int(schemaVersion)}
+	cfg := pluginConfig{Version: policyVersion}
 	if req.SchemaVersion < schemaVersion {
 		globalState.failClosedOrPreserve(cfg, req.SchemaVersion, fmt.Errorf("%s requires CPA plugin RPC schema 2 or newer (CPA v7.2.103+)", pluginID))
 		return nil
@@ -255,24 +246,59 @@ func configure(raw []byte) error {
 		globalState.failClosedOrPreserve(cfg, req.SchemaVersion, err)
 		return nil
 	}
-	cfg.Version = sanitized.Version
-	cfg.Policies = sanitized.Policies
+	applyDocumentToConfig(&cfg, sanitized)
 	globalState.setHostSchema(req.SchemaVersion)
 	globalState.replace(cfg, snapshot, source)
 	return nil
 }
 
 func documentFromConfig(cfg pluginConfig) policyDocument {
-	return policyDocument{Version: cfg.Version, Policies: clonePolicyConfigs(cfg.Policies)}
+	return policyDocument{Version: cfg.Version, AccessControlEnabled: cloneBool(cfg.AccessControlEnabled), DefaultDeny: cloneBool(cfg.DefaultDeny), Groups: cloneGroupConfigs(cfg.Groups), Policies: clonePolicyConfigs(cfg.Policies)}
+}
+
+func boolValue(value *bool, fallback bool) bool {
+	if value == nil {
+		return fallback
+	}
+	return *value
+}
+
+func cloneBool(value *bool) *bool {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	return &cloned
+}
+
+func applyDocumentToConfig(cfg *pluginConfig, document policyDocument) {
+	cfg.Version = document.Version
+	cfg.AccessControlEnabled = cloneBool(document.AccessControlEnabled)
+	cfg.DefaultDeny = cloneBool(document.DefaultDeny)
+	cfg.Groups = cloneGroupConfigs(document.Groups)
+	cfg.Policies = clonePolicyConfigs(document.Policies)
+}
+
+func cloneGroupConfigs(groups []groupConfig) []groupConfig {
+	cloned := make([]groupConfig, len(groups))
+	for index, group := range groups {
+		cloned[index] = groupConfig{ID: group.ID, Name: group.Name, AllowProfiles: append([]string{}, group.AllowProfiles...), DenyProfiles: append([]string{}, group.DenyProfiles...)}
+	}
+	return cloned
 }
 
 func clonePolicyConfigs(policies []policyConfig) []policyConfig {
 	cloned := make([]policyConfig, len(policies))
 	for index, policy := range policies {
 		cloned[index] = policyConfig{
-			CallerScope:   policy.CallerScope,
-			AllowProfiles: append([]string{}, policy.AllowProfiles...),
-			DenyProfiles:  append([]string{}, policy.DenyProfiles...),
+			CallerScope: policy.CallerScope,
+			GroupIDs:    append([]string{}, policy.GroupIDs...),
+		}
+		if policy.AllowProfiles != nil {
+			cloned[index].AllowProfiles = append([]string{}, policy.AllowProfiles...)
+		}
+		if policy.DenyProfiles != nil {
+			cloned[index].DenyProfiles = append([]string{}, policy.DenyProfiles...)
 		}
 	}
 	return cloned
@@ -342,38 +368,150 @@ func decodeStrictYAML(raw []byte, target any) error {
 }
 
 func compileDocument(document policyDocument) (policySnapshot, policyDocument, error) {
-	if document.Version != int(schemaVersion) {
-		return policySnapshot{}, policyDocument{}, fmt.Errorf("unsupported policy version %d; only version 2 is supported", document.Version)
+	if document.Version != 2 && document.Version != policyVersion {
+		return policySnapshot{}, policyDocument{}, fmt.Errorf("unsupported policy version %d; only versions 2 and 3 are supported", document.Version)
 	}
-	if document.Policies == nil {
-		document.Policies = []policyConfig{}
+	// Own all slices before normalization, so failed validation cannot mutate the
+	// last valid config or a caller's draft through shared backing arrays.
+	document.Policies = clonePolicyConfigs(document.Policies)
+	document.Groups = cloneGroupConfigs(document.Groups)
+	if document.Version == 2 {
+		var err error
+		document, err = migrateV2Document(document)
+		if err != nil {
+			return policySnapshot{}, policyDocument{}, err
+		}
+	}
+	enabled := boolValue(document.AccessControlEnabled, true)
+	defaultDeny := boolValue(document.DefaultDeny, true)
+	document.AccessControlEnabled = &enabled
+	document.DefaultDeny = &defaultDeny
+	groups := make(map[string]groupConfig, len(document.Groups))
+	names := make(map[string]struct{}, len(document.Groups))
+	for index := range document.Groups {
+		group := &document.Groups[index]
+		group.ID = strings.TrimSpace(group.ID)
+		group.Name = strings.TrimSpace(group.Name)
+		if !validGroupID(group.ID) {
+			return policySnapshot{}, policyDocument{}, fmt.Errorf("groups[%d].id must contain 1 to 128 ASCII letters, digits, underscores or hyphens", index)
+		}
+		if _, exists := groups[group.ID]; exists {
+			return policySnapshot{}, policyDocument{}, fmt.Errorf("duplicate group id at groups[%d]", index)
+		}
+		if group.Name == "" || utf8.RuneCountInString(group.Name) > 128 {
+			return policySnapshot{}, policyDocument{}, fmt.Errorf("groups[%d].name must contain 1 to 128 characters", index)
+		}
+		name := strings.ToLower(group.Name)
+		if _, exists := names[name]; exists {
+			return policySnapshot{}, policyDocument{}, fmt.Errorf("duplicate group name at groups[%d]", index)
+		}
+		names[name] = struct{}{}
+		var err error
+		group.AllowProfiles, err = normalizePatterns(group.AllowProfiles, fmt.Sprintf("groups[%d].allow_profiles", index))
+		if err != nil {
+			return policySnapshot{}, policyDocument{}, err
+		}
+		group.DenyProfiles, err = normalizePatterns(group.DenyProfiles, fmt.Sprintf("groups[%d].deny_profiles", index))
+		if err != nil {
+			return policySnapshot{}, policyDocument{}, err
+		}
+		groups[group.ID] = *group
 	}
 
-	snapshot := policySnapshot{ByCallerScope: make(map[string]runtimePolicy)}
+	snapshot := policySnapshot{ByCallerScope: make(map[string]runtimePolicy), AccessControlEnabled: enabled, DefaultDeny: defaultDeny}
+	seenScopes := make(map[string]struct{}, len(document.Policies))
 	for index := range document.Policies {
 		item := &document.Policies[index]
 		item.CallerScope = strings.ToLower(strings.TrimSpace(item.CallerScope))
 		if !validSHA256(item.CallerScope) {
 			return policySnapshot{}, policyDocument{}, fmt.Errorf("policies[%d].caller_scope must be 64 hexadecimal characters", index)
 		}
-		if _, exists := snapshot.ByCallerScope[item.CallerScope]; exists {
+		if _, exists := seenScopes[item.CallerScope]; exists {
 			return policySnapshot{}, policyDocument{}, fmt.Errorf("duplicate caller_scope at policies[%d]", index)
 		}
-		var err error
-		item.AllowProfiles, err = normalizePatterns(item.AllowProfiles, fmt.Sprintf("policies[%d].allow_profiles", index))
-		if err != nil {
-			return policySnapshot{}, policyDocument{}, err
+		seenScopes[item.CallerScope] = struct{}{}
+		if item.AllowProfiles != nil || item.DenyProfiles != nil {
+			return policySnapshot{}, policyDocument{}, fmt.Errorf("policies[%d] must use group_ids; profile rules belong to groups", index)
 		}
-		item.DenyProfiles, err = normalizePatterns(item.DenyProfiles, fmt.Sprintf("policies[%d].deny_profiles", index))
-		if err != nil {
-			return policySnapshot{}, policyDocument{}, err
+		policy := runtimePolicy{}
+		seenGroups := make(map[string]struct{}, len(item.GroupIDs))
+		for groupIndex := range item.GroupIDs {
+			id := strings.TrimSpace(item.GroupIDs[groupIndex])
+			group, exists := groups[id]
+			if !exists {
+				return policySnapshot{}, policyDocument{}, fmt.Errorf("policies[%d].group_ids[%d] references an unknown group", index, groupIndex)
+			}
+			if _, duplicate := seenGroups[id]; duplicate {
+				return policySnapshot{}, policyDocument{}, fmt.Errorf("duplicate group reference at policies[%d].group_ids[%d]", index, groupIndex)
+			}
+			seenGroups[id] = struct{}{}
+			item.GroupIDs[groupIndex] = id
+			policy.AllowProfiles = append(policy.AllowProfiles, group.AllowProfiles...)
+			policy.DenyProfiles = append(policy.DenyProfiles, group.DenyProfiles...)
 		}
-		snapshot.ByCallerScope[item.CallerScope] = runtimePolicy{
-			AllowProfiles: append([]string(nil), item.AllowProfiles...),
-			DenyProfiles:  append([]string(nil), item.DenyProfiles...),
+		sort.Strings(item.GroupIDs)
+		// No memberships is the unassigned/new-key state. Referencing an empty
+		// group is different: it is an explicit whitelist with no grants.
+		if len(item.GroupIDs) > 0 {
+			snapshot.ByCallerScope[item.CallerScope] = policy
 		}
 	}
 	return snapshot, document, nil
+}
+
+func validGroupID(id string) bool {
+	if len(id) == 0 || len(id) > 128 {
+		return false
+	}
+	for _, r := range id {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func migrateV2Document(document policyDocument) (policyDocument, error) {
+	if len(document.Groups) > 0 {
+		return policyDocument{}, fmt.Errorf("version 2 cannot define groups; use version 3")
+	}
+	document.Version = policyVersion
+	seen := make(map[string]struct{}, len(document.Policies))
+	for index := range document.Policies {
+		policy := &document.Policies[index]
+		if len(policy.GroupIDs) > 0 {
+			return policyDocument{}, fmt.Errorf("version 2 policies cannot define group_ids; use version 3")
+		}
+		scope := strings.ToLower(strings.TrimSpace(policy.CallerScope))
+		if !validSHA256(scope) {
+			return policyDocument{}, fmt.Errorf("policies[%d].caller_scope must be 64 hexadecimal characters", index)
+		}
+		if _, exists := seen[scope]; exists {
+			return policyDocument{}, fmt.Errorf("duplicate caller_scope at policies[%d]", index)
+		}
+		seen[scope] = struct{}{}
+		allow, err := normalizePatterns(policy.AllowProfiles, fmt.Sprintf("policies[%d].allow_profiles", index))
+		if err != nil {
+			return policyDocument{}, err
+		}
+		deny, err := normalizePatterns(policy.DenyProfiles, fmt.Sprintf("policies[%d].deny_profiles", index))
+		if err != nil {
+			return policyDocument{}, err
+		}
+		// V2's empty allow list meant all profiles. Preserve that existing grant
+		// explicitly while new v3 groups use an empty, restrictive whitelist.
+		if len(allow) == 0 {
+			allow = []string{"*"}
+		}
+		id := "migrated-" + scope
+		document.Groups = append(document.Groups, groupConfig{ID: id, Name: "Migrated " + scope, AllowProfiles: allow, DenyProfiles: deny})
+		policy.CallerScope = scope
+		policy.GroupIDs = []string{id}
+		policy.AllowProfiles = nil
+		policy.DenyProfiles = nil
+	}
+	return document, nil
 }
 
 func normalizePatterns(patterns []string, field string) ([]string, error) {
@@ -444,9 +582,6 @@ func policyAllowsCandidateWithLegacies(policy runtimePolicy, profile, provider s
 		if matches(pattern) {
 			return false
 		}
-	}
-	if len(policy.AllowProfiles) == 0 {
-		return true
 	}
 	for _, pattern := range policy.AllowProfiles {
 		if matches(pattern) {
@@ -539,11 +674,7 @@ func writePolicyFile(path string, document policyDocument) error {
 	var raw []byte
 	var err error
 	if strings.EqualFold(filepath.Ext(path), ".toml") {
-		if len(document.Policies) == 0 {
-			raw = []byte("version = 2\npolicies = []\n")
-		} else {
-			raw, err = toml.Marshal(document)
-		}
+		raw, err = toml.Marshal(document)
 	} else {
 		raw, err = yaml.Marshal(document)
 	}

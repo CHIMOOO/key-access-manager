@@ -9,6 +9,7 @@ import (
 const (
 	abiVersion    uint32 = 1
 	schemaVersion uint32 = 2
+	policyVersion        = 3
 	pluginID             = "key-provider-access"
 )
 
