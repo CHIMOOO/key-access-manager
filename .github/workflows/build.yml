@@ -5,6 +5,8 @@ on:
   push:
     tags:
       - 'v*'
+  release:
+    types: [published]
   workflow_dispatch:
 
 permissions:
@@ -208,17 +210,20 @@ jobs:
 
       - name: Build FreeBSD shared library
         timeout-minutes: 45
-        uses: go-cross/cgo-actions@v1
-        env:
-          GOFLAGS: -trimpath -buildmode=c-shared
-        with:
-          dir: .
-          packages: .
-          targets: freebsd-amd64
-          out-dir: dist/freebsd-amd64
-          output: ${{ env.PLUGIN_NAME }}.so
-          flags: -ldflags=-s -w
-          x-flags: main.pluginVersion=${{ steps.release_metadata.outputs.version }}
+        run: |
+          set -euo pipefail
+          # Older FreeBSD releases move from the download mirror to the archive.
+          SYSROOT="${RUNNER_TEMP}/freebsd-14.3-amd64"
+          mkdir -p "${SYSROOT}" dist/freebsd-amd64
+          wget --tries=3 -O "${RUNNER_TEMP}/freebsd-base.txz" \
+            https://archive.freebsd.org/old-releases/amd64/14.3-RELEASE/base.txz
+          tar -xf "${RUNNER_TEMP}/freebsd-base.txz" -C "${SYSROOT}" ./usr/include ./usr/lib ./lib
+          CGO_ENABLED=1 GOOS=freebsd GOARCH=amd64 \
+            CGO_LDFLAGS="-fuse-ld=lld" \
+            CC="clang --target=x86_64-unknown-freebsd14.3 --sysroot=${SYSROOT}" \
+            go build -trimpath -buildmode=c-shared \
+              -ldflags "-s -w -X main.pluginVersion=${VERSION}" \
+              -o "dist/freebsd-amd64/${PLUGIN_NAME}.so" .
 
       - name: Package plugin
         run: |
