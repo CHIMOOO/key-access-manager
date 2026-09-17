@@ -66,6 +66,9 @@
               <div id="healthBadge" class="health-badge"><span class="status-dot"></span><span>Connecting</span></div>
             </div>
             <div class="topbar-actions">
+              <button id="exportConfigButton" class="button secondary compact" type="button" title="下载当前配置（包含未保存修改）">下载配置</button>
+              <button id="importConfigButton" class="button secondary compact" type="button" title="导入 JSON 配置，保存后生效">导入配置</button>
+              <input id="importConfigFile" type="file" accept=".json,application/json" hidden aria-label="选择插件配置文件">
               <button id="refreshDataButton" class="icon-button" type="button" aria-label="Refresh CPA keys and policies" title="Refresh CPA keys and policies"></button>
               <button id="reloadButton" class="button secondary compact" type="button" aria-label="Reload from policy file" title="Reload from policy file"></button>
               <button id="saveButton" class="button primary compact" type="button" aria-label="Save access policy" title="Save access policy" disabled></button>

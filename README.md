@@ -19,6 +19,12 @@ CLIProxyAPI 分组权限管理插件：Key 可加入多个组，只能通过分�
 
 刷新页面、刷新目录、从文件重载，都不会自动增加或删除上游授权。暂时不在目录中的账号规则保留并显示“目录外”，账号重新出现时原规则仍生效。旧浏览器缓存不再恢复或扩大权限。已经错误保存的全选策略无法推断原始意图，请手动重新选择正确账号并保存。
 
+## 配置备份与恢复
+
+点击顶部“下载配置”可导出 v3 JSON，包含当前全局开关、分组、上游规则和 Key 的分组关系（包括未保存的草稿及失效 Key 的规则），不包含明文 API Key、上游凭据或 Management Key。
+
+点击“导入配置”选择本插件导出的 JSON 文件（最大 5 MB）。校验成功后替换当前草稿，点击“保存修改”后才在服务器生效；无效文件不会改动现有草稿。导入保留服务器版本校验，避免覆盖其他会话的并发修改。跨实例恢复需要相同 Key 的 caller scope 和对应上游 Profile ID，否则规则不会自动匹配新身份。
+
 ## Authorization behavior
 
 - CPA authenticates downstream keys and supplies `Metadata.caller_scope`; raw keys never belong in the policy document.

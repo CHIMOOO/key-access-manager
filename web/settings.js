@@ -78,6 +78,15 @@
   // and deliberately falls back to English instead of the browser's Chinese
   // locale. Chinese remains available for existing installations.
   const ENGLISH_REPLACEMENTS = [
+    ["下载配置", "Download config"],
+    ["导入配置", "Import config"],
+    ["下载当前配置（包含未保存修改）", "Download current config (including unsaved changes)"],
+    ["导入 JSON 配置，保存后生效", "Import JSON config; save to apply"],
+    ["选择插件配置文件", "Select plugin config file"],
+    ["配置已导入为草稿，点击保存修改后生效。", "Config imported as a draft. Save changes to apply."],
+    ["配置已下载，包含当前未保存的修改。", "Config downloaded, including current unsaved changes."],
+    ["配置文件过大，最大支持 5 MB。", "Config file is too large (maximum 5 MB)."],
+    ["无法导入：请选择本插件导出的 v3 JSON 配置。", "Import failed: select a v3 JSON config exported by this plugin."],
     ["搜索分组成员", "Search group members"],
     ["搜索 Key 编号、脱敏值或指纹…", "Search key number, masked value or fingerprint…"],
     ["选择筛选结果", "Select filtered keys"],
@@ -375,6 +384,9 @@
   const editor = $("#editor");
   const nav = $("#policyNav");
   const saveButton = $("#saveButton");
+  const exportConfigButton = $("#exportConfigButton");
+  const importConfigButton = $("#importConfigButton");
+  const importConfigFile = $("#importConfigFile");
   const reloadButton = $("#reloadButton");
   const refreshDataButton = $("#refreshDataButton");
   const healthBadge = $("#healthBadge");
@@ -1372,6 +1384,61 @@
     }
   }
 
+  function exportPolicyText() {
+    return JSON.stringify(normalizePolicyDocument(serializablePolicy()), null, 2) + "\n";
+  }
+
+  function downloadConfig() {
+    if (state.busy || state.profileBusy || !state.status) return;
+    try {
+      const blob = new Blob([exportPolicyText()], { type: "application/json;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `key-access-manager-${new Date().toISOString().replace(/[:.]/g, "-")}.json`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+      showToast("配置已下载，包含当前未保存的修改。", "success");
+    } catch (error) {
+      showToast(error.message, "error");
+    }
+  }
+
+  function importPolicyText(text) {
+    let documentValue;
+    try {
+      documentValue = normalizePolicyDocument(JSON.parse(text.replace(/^\uFEFF/, "")));
+    } catch (_) {
+      throw new Error(translateText("无法导入：请选择本插件导出的 v3 JSON 配置。"));
+    }
+    // Validate completely before replacing the draft; retain the server revision
+    // so an import cannot bypass the normal concurrent-update protection.
+    applyPolicyDocument(documentValue);
+    state.selectedGroup = "";
+    state.selectedIndex = -1;
+    state.memberQuery = "";
+    state.openPicker = "";
+    markDirty();
+    renderAll();
+  }
+
+  async function importConfig(file) {
+    if (!file || state.busy || state.profileBusy || !state.status) return;
+    setBusy(true);
+    try {
+      if (file.size > 5 * 1024 * 1024) throw new Error(translateText("配置文件过大，最大支持 5 MB。"));
+      importPolicyText(await file.text());
+      showToast("配置已导入为草稿，点击保存修改后生效。", "success");
+    } catch (error) {
+      showToast(error.message, "error");
+    } finally {
+      importConfigFile.value = "";
+      setBusy(false);
+    }
+  }
+
   function serializablePolicy() {
     const active = state.keys.filter((key) => key.hasPolicy || hasRules(key)).map((key) => ({ caller_scope: key.scope, group_ids: [...key.group_ids] }));
     const stale = state.stalePolicies.map((policy) => ({ caller_scope: policy.caller_scope, group_ids: [...policy.group_ids] }));
@@ -1604,6 +1671,11 @@
 
   refreshDataButton.addEventListener("click", refreshData);
   saveButton.addEventListener("click", save);
+  exportConfigButton.addEventListener("click", downloadConfig);
+  importConfigButton.addEventListener("click", () => {
+    if (!state.busy && !state.profileBusy && state.status) importConfigFile.click();
+  });
+  importConfigFile.addEventListener("change", () => importConfig(importConfigFile.files?.[0]));
   reloadButton.addEventListener("click", reload);
   $("#searchInput").addEventListener("input", (event) => { state.search = event.target.value; scheduleNavRender(); });
 

@@ -13,15 +13,17 @@ const group = (id, allow = [], deny = []) => ({ id, name: id, allow_profiles: al
 const policy = (groups = [group('team', ['A'])], policies = [{caller_scope: scopeA, group_ids: ['team']}]) => ({version: 3, access_control_enabled: true, default_deny: true, groups, policies});
 
 function harness(initial = policy()) {
+  const downloads = [];
+  const blobs = new Map();
   const elements = new Map();
   const element = () => ({innerHTML: '', textContent: '', hidden: false, dataset: {}, children: [], listeners: {},
     classList: {add() {}, remove() {}, toggle() {}},
     addEventListener(name, handler) { this.listeners[name] = handler; },
     querySelector() { return null; }, querySelectorAll() { return []; },
-    appendChild(child) { this.children.push(child); }, remove() {}});
+    appendChild(child) { this.children.push(child); }, remove() {}, click() { if (this.download) downloads.push({name:this.download, blob:blobs.get(this.href)}); }});
   const document = {
     querySelector(selector) { if (!elements.has(selector)) elements.set(selector, element()); return elements.get(selector); },
-    addEventListener() {}, createElement: element,
+    addEventListener() {}, createElement: element, body: element(),
   };
   let stored = plain(initial);
   let revision = 1;
@@ -31,10 +33,12 @@ function harness(initial = policy()) {
   const requests = [];
   const subjectNames = ['state', 'installRemoteData', 'serializablePolicy', 'keyAllowsProfile', 'policiesEquivalent', 'normalizePolicyDocument', 'renderKeyEditor', 'renderGroupEditor', 'createGroup', 'deleteGroup', 'setKeyMembership', 'updateProfiles', 'selectAllProfiles', 'clearFilteredProfiles', 'profileCategory', 'profileMatchesPicker', 'toggleProfileRule', 'refreshData', 'reload', 'save', 'refreshProfileCatalog', 'connectFromCPAMC', 'finalizeEndedSession'];
   subjectNames.push('filteredMembers', 'updateFilteredMembers', 'keyGroupTags', 'renderNav', 'memberOptions');
+  subjectNames.push('exportPolicyText', 'importPolicyText', 'importConfig', 'downloadConfig');
   let source = fs.readFileSync(path.join(__dirname, 'settings.js'), 'utf8');
   assert.match(source, /  initializeChrome\(\);\s+connectFromCPAMC\(\);/);
   source = source.replace(/  initializeChrome\(\);\s+connectFromCPAMC\(\);/, `  globalThis.subject = {${subjectNames.join(',')}};`);
-  const context = vm.createContext({document, console, Uint8Array, TextEncoder, TextDecoder, DataView, AbortController,
+  const context = vm.createContext({document, console, Uint8Array, TextEncoder, TextDecoder, DataView, AbortController, Blob,
+    URL: {createObjectURL(blob) {const url = `blob:test-${blobs.size}`; blobs.set(url, blob); return url;}, revokeObjectURL(url) {blobs.delete(url);}},
     requestAnimationFrame() {},
     window: {crypto: webcrypto, addEventListener() {}, setTimeout() { return 1; }, clearTimeout() {}, confirm() {return true;}, prompt() {return 'new group';}},
     localStorage: {getItem(name) {return name === 'isLoggedIn' ? 'true' : name === 'cli-proxy-auth' ? JSON.stringify({state:{managementKey:'test-session'}}) : null;}, setItem() {throw Error('must not persist authorization in browser storage');}},
@@ -60,7 +64,7 @@ function harness(initial = policy()) {
   const api = context.subject;
   const remote = () => ({status: {persistent_updates: true, schema_version: 2}, policies: {policy: plain(stored), revision}, keys: [scopeA, scopeB].map(s => ({scope: s, masked: 'test••••', fingerprint: s.slice(0, 8), group_ids: []})), catalog: {profiles: profiles.map(id => ({id, displayName: id, provider: 'codex'}))}});
   api.installRemoteData(remote(), scopeA);
-  return {api, elements, requests, remote, stored: () => plain(stored), setCatalog(ids) {profiles = ids;}, timeoutAfterSave() {timeoutAfterSave = true;}, remoteEdit(doc) {stored = plain(doc); revision++;}, setCodexProfiles(entries) {codexAPIProfiles = entries;}};
+  return {api, elements, requests, downloads, remote, stored: () => plain(stored), setCatalog(ids) {profiles = ids;}, timeoutAfterSave() {timeoutAfterSave = true;}, remoteEdit(doc) {stored = plain(doc); revision++;}, setCodexProfiles(entries) {codexAPIProfiles = entries;}};
 }
 
 test('single-account whitelist survives reload, catalog refresh and save', async () => {
@@ -381,4 +385,67 @@ test('key group labels show all names, escape markup, and follow membership chan
   assert.match(api.keyGroupTags(api.state.keys[1]), /未分组/);
   api.setKeyMembership(api.state.keys[0], 'team', false);
   assert.doesNotMatch(api.keyGroupTags(api.state.keys[0]), /开发组/);
+});
+
+test('configuration export/import round-trips drafts, stale scopes and rules without credentials', async () => {
+  const h = harness(policy([group('team', ['A', 'missing-profile'], ['B']), group('other', ['*'])], [
+    {caller_scope: scopeA, group_ids:['team','other']},
+    {caller_scope: scope('deleted-key'), group_ids:['other']},
+  ]));
+  h.api.state.defaultDeny = false;
+  h.api.state.token = 'private-management-token';
+  h.api.state.dirty = true;
+  const backup = h.api.exportPolicyText();
+  const expected = JSON.parse(backup);
+  assert.doesNotMatch(backup, /private-management-token|test-key-A|test-key-B|masked|fingerprint|revision/);
+  h.api.state.groups = [];
+  h.api.importPolicyText('\uFEFF' + backup);
+  assert.deepEqual(plain(h.api.serializablePolicy()), expected);
+  assert.equal(h.api.state.dirty, true);
+  assert.equal(h.requests.length, 0);
+  await h.api.save();
+  await h.api.refreshData();
+  assert.deepEqual(plain(h.api.serializablePolicy()), expected);
+});
+
+test('invalid or oversized import leaves current draft untouched', async () => {
+  const h = harness();
+  const before = h.api.exportPolicyText();
+  const invalidGroup = policy(); invalidGroup.policies[0].group_ids = ['unknown'];
+  for (const content of ['not JSON', '{}', JSON.stringify({...policy(), version:2}), JSON.stringify(invalidGroup)]) {
+    assert.throws(() => h.api.importPolicyText(content));
+    assert.equal(h.api.exportPolicyText(), before);
+    assert.equal(h.api.state.dirty, false);
+  }
+  await h.api.importConfig({size: 6 * 1024 * 1024, text() {throw Error('oversized file must not be read');}});
+  assert.equal(h.api.exportPolicyText(), before);
+  assert.equal(h.api.state.busy, false);
+});
+
+test('import preserves current revision and cannot overwrite concurrent server edits', async () => {
+  const h = harness();
+  const revision = h.api.state.revision;
+  h.remoteEdit(policy([group('team', ['B'])]));
+  const imported = policy([group('team', ['C'])]);
+  h.api.importPolicyText(JSON.stringify(imported));
+  assert.equal(h.api.state.revision, revision);
+  await h.api.save();
+  assert.deepEqual(h.stored().groups[0].allow_profiles, ['B']);
+  assert.equal(h.api.state.dirty, true);
+});
+
+test('download generates a JSON file that the file importer accepts without saving remotely', async () => {
+  const h = harness();
+  h.api.downloadConfig();
+  assert.equal(h.downloads.length, 1);
+  const download = h.downloads[0];
+  assert.match(download.name, /^key-access-manager-.*\.json$/);
+  assert.equal(download.blob.type, 'application/json;charset=utf-8');
+  const other = harness(policy([group('different')], []));
+  await other.api.importConfig(download.blob);
+  assert.deepEqual(plain(other.api.serializablePolicy()), JSON.parse(await download.blob.text()));
+  assert.equal(other.api.state.dirty, true);
+  assert.equal(other.api.state.busy, false);
+  assert.equal(other.requests.length, 0);
+  assert.equal(other.elements.get('#importConfigFile').value, '');
 });
