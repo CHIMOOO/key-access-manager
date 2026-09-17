@@ -11,7 +11,7 @@ plugins:
       priority: 100
       version: 3
       access_control_enabled: true
-      default_deny: true
+      default_deny: false
       groups: []
       policies: []
       # Use the UI to create groups, choose profiles and assign keys, then save.

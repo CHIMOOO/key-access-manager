@@ -1,6 +1,6 @@
 version: 3
 access_control_enabled: true
-default_deny: true
+default_deny: false
 # Only groups define upstream rules. Empty allow lists grant nothing.
 groups:
   - id: developers

@@ -29,7 +29,7 @@ function harness(initial = policy()) {
   let timeoutAfterSave = false;
   let codexAPIProfiles = [];
   const requests = [];
-  const subjectNames = ['state', 'installRemoteData', 'serializablePolicy', 'keyAllowsProfile', 'policiesEquivalent', 'normalizePolicyDocument', 'renderKeyEditor', 'renderGroupEditor', 'createGroup', 'deleteGroup', 'setKeyMembership', 'updateProfiles', 'selectAllProfiles', 'toggleProfileRule', 'refreshData', 'reload', 'save', 'refreshProfileCatalog', 'connectFromCPAMC', 'finalizeEndedSession'];
+  const subjectNames = ['state', 'installRemoteData', 'serializablePolicy', 'keyAllowsProfile', 'policiesEquivalent', 'normalizePolicyDocument', 'renderKeyEditor', 'renderGroupEditor', 'createGroup', 'deleteGroup', 'setKeyMembership', 'updateProfiles', 'selectAllProfiles', 'clearFilteredProfiles', 'profileCategory', 'profileMatchesPicker', 'toggleProfileRule', 'refreshData', 'reload', 'save', 'refreshProfileCatalog', 'connectFromCPAMC', 'finalizeEndedSession'];
   let source = fs.readFileSync(path.join(__dirname, 'settings.js'), 'utf8');
   assert.match(source, /  initializeChrome\(\);\s+connectFromCPAMC\(\);/);
   source = source.replace(/  initializeChrome\(\);\s+connectFromCPAMC\(\);/, `  globalThis.subject = {${subjectNames.join(',')}};`);
@@ -215,4 +215,126 @@ test('legacy profile identity preview matches backend without rewriting saved gr
   h.api.state.groups[0].allow_profiles = ['*'];
   h.api.state.groups[0].deny_profiles = [legacy];
   assert.equal(h.api.keyAllowsProfile(h.api.state.keys[0], current.id), false);
+});
+
+test('fresh policy has enabled access control and opt-in default deny through save and reload', async () => {
+  const initial = policy([], []);
+  initial.default_deny = false;
+  const h = harness(initial);
+  assert.equal(h.api.state.accessControlEnabled, true);
+  assert.equal(h.api.state.defaultDeny, false);
+  assert.equal(h.api.keyAllowsProfile(h.api.state.keys[1], 'A'), true);
+  h.api.state.defaultDeny = true;
+  h.api.state.dirty = true;
+  await h.api.save();
+  await h.api.reload();
+  assert.equal(h.api.state.accessControlEnabled, true);
+  assert.equal(h.api.state.defaultDeny, true);
+  assert.equal(h.api.keyAllowsProfile(h.api.state.keys[1], 'A'), false);
+  for (const enabled of [true, false]) {
+    for (const defaultDeny of [true, false]) {
+      const explicit = policy();
+      explicit.access_control_enabled = enabled;
+      explicit.default_deny = defaultDeny;
+      const result = h.api.normalizePolicyDocument(explicit);
+      assert.equal(result.access_control_enabled, enabled);
+      assert.equal(result.default_deny, defaultDeny);
+    }
+  }
+  for (const key of ['access_control_enabled', 'default_deny']) {
+    const invalid = policy();
+    delete invalid[key];
+    assert.throws(() => h.api.normalizePolicyDocument(invalid));
+  }
+});
+
+const pickerProfiles = () => [
+  {id: 'codex-primary', legacyID: 'codex-old', provider: 'codex', kind: 'apikey', displayName: 'Primary Team'},
+  {id: 'codex-backup', provider: 'CODEX', kind: 'apikey', displayName: 'Backup Team'},
+  {id: 'xai-primary', provider: 'xai', kind: 'apikey', displayName: 'Grok Team'},
+  {id: 'oauth-primary', provider: 'codex', kind: 'oauth', displayName: 'Login Team'},
+  {id: 'other-primary', provider: 'gemini', kind: 'apikey', displayName: 'Gemini Team'},
+];
+
+test('picker combines provider categories with case-insensitive name, id, provider and kind search', () => {
+  const api = harness().api;
+  const profiles = pickerProfiles();
+  assert.equal(api.state.pickerCategory, 'codex');
+  assert.deepEqual(profiles.map(profile => api.profileCategory(profile)), ['codex', 'codex', 'xai', 'oauth', 'other']);
+  const matching = () => profiles.filter(profile => api.profileMatchesPicker(profile)).map(profile => profile.id);
+  assert.deepEqual(matching(), ['codex-primary', 'codex-backup']);
+  api.state.pickerQuery = '  PRIMARY TEAM  ';
+  assert.deepEqual(matching(), ['codex-primary']);
+  api.state.pickerQuery = '';
+  api.state.pickerCategory = 'xai';
+  assert.deepEqual(matching(), ['xai-primary']);
+  api.state.pickerCategory = 'oauth';
+  api.state.pickerQuery = 'CODEX';
+  assert.deepEqual(matching(), ['oauth-primary']);
+  api.state.pickerCategory = 'other';
+  api.state.pickerQuery = 'APIKEY';
+  assert.deepEqual(matching(), ['other-primary']);
+  api.state.pickerCategory = 'all';
+  api.state.pickerQuery = 'XAI-PRIMARY';
+  assert.deepEqual(matching(), ['xai-primary']);
+  api.state.pickerQuery = 'no-match';
+  assert.deepEqual(matching(), []);
+});
+
+test('changing picker category and search never alters saved rules or dirty state', () => {
+  const h = harness(policy([group('team', ['codex-primary', 'oauth-primary'], ['xai-primary'])]));
+  h.api.state.selectedGroup = 'team';
+  h.api.state.openPicker = 'allow_profiles';
+  h.api.state.profiles = pickerProfiles();
+  const before = plain(h.api.serializablePolicy());
+  for (const category of ['codex', 'xai', 'oauth', 'other', 'all']) {
+    h.api.state.pickerCategory = category;
+    h.api.state.pickerQuery = category === 'all' ? 'missing' : 'TEAM';
+    h.api.state.profiles.filter(profile => h.api.profileMatchesPicker(profile));
+    h.api.renderGroupEditor(h.api.state.groups[0]);
+    assert.equal(h.api.state.dirty, false);
+    assert.deepEqual(plain(h.api.serializablePolicy()), before);
+  }
+});
+
+test('bulk picker actions affect only current matches and retain off-filter and wildcard rules', () => {
+  for (const kind of ['allow_profiles', 'deny_profiles']) {
+    const h = harness();
+    const api = h.api;
+    api.state.selectedGroup = 'team';
+    api.state.profiles = pickerProfiles();
+    api.state.pickerCategory = 'codex';
+    api.state.pickerQuery = 'primary';
+    const rules = api.state.groups[0];
+    rules[kind] = ['oauth-primary', 'xai-primary', 'codex-backup', 'missing-account', '*', 'codex-*'];
+    const untouched = plain(rules[kind]);
+    api.selectAllProfiles(kind);
+    assert.deepEqual(plain(rules[kind]), [...untouched, 'codex-primary']);
+    api.selectAllProfiles(kind);
+    assert.deepEqual(plain(rules[kind]), [...untouched, 'codex-primary']);
+    rules[kind].push('codex-old');
+    api.clearFilteredProfiles(kind);
+    assert.deepEqual(plain(rules[kind]), untouched);
+    assert.equal(api.state.dirty, true);
+
+    api.state.dirty = false;
+    api.state.pickerQuery = 'no-match';
+    api.selectAllProfiles(kind);
+    api.clearFilteredProfiles(kind);
+    assert.deepEqual(plain(rules[kind]), untouched);
+    assert.equal(api.state.dirty, false);
+  }
+});
+
+test('selected other tab stays reachable when its last provider disappears', () => {
+  const h = harness();
+  h.api.state.selectedGroup = 'team';
+  h.api.state.openPicker = 'allow_profiles';
+  h.api.state.pickerCategory = 'other';
+  h.api.state.profiles = pickerProfiles().filter(profile => profile.provider !== 'gemini');
+  h.api.renderGroupEditor(h.api.state.groups[0]);
+  const html = h.elements.get('#editor').innerHTML;
+  assert.match(html, /id="allow_profiles-tab-other"[^>]*aria-selected="true"[^>]*tabindex="0"/);
+  assert.match(html, /aria-labelledby="allow_profiles-tab-other"/);
+  assert.equal(h.api.state.dirty, false);
 });

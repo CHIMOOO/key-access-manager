@@ -132,7 +132,7 @@ func pluginRegistration() registration {
 				{Name: "policy_file", Type: "string", Description: "Optional strict YAML or TOML policy document. Legacy v2 files migrate to v3 groups; the Web UI initializes persistent storage when omitted."},
 				{Name: "version", Type: "number", Description: "Policy schema version 3. Version 2 is accepted for migration."},
 				{Name: "access_control_enabled", Type: "boolean", Description: "Enable group access enforcement (default true). Disabling keeps CPA's built-in API-key authentication."},
-				{Name: "default_deny", Type: "boolean", Description: "Deny keys without group membership (default true), including new CPA keys."},
+				{Name: "default_deny", Type: "boolean", Description: "Deny keys without group membership when enabled (default false), including new CPA keys."},
 				{Name: "groups", Type: "array", Description: "Named groups with allow_profiles and deny_profiles; deny takes precedence across groups."},
 				{Name: "policies", Type: "array", Description: "CPA caller_scope to group_ids memberships. Upstream profile rules belong only to groups."},
 			},

@@ -210,7 +210,7 @@ func TestInterceptorAcceptsSchedulerMigratedAPIKeyID(t *testing.T) {
 }
 
 func TestSchedulerUnconfiguredAndConfiguredDeniedKeysFailClosed(t *testing.T) {
-	installTestPolicy(t, policyDocument{Version: 2, Policies: []policyConfig{{
+	installTestPolicy(t, policyDocument{Version: 2, DefaultDeny: groupTestBool(true), Policies: []policyConfig{{
 		CallerScope: scopeA, DenyProfiles: []string{"*"},
 	}}})
 	request := schedulerPickRequest{
@@ -340,7 +340,7 @@ func TestInterceptorUsesOnlyCallerScopeMetadata(t *testing.T) {
 }
 
 func TestInterceptorIdentityAndUnconfiguredKeyRules(t *testing.T) {
-	installTestPolicy(t, policyDocument{Version: 2, Policies: []policyConfig{{CallerScope: scopeA, DenyProfiles: []string{"blocked"}}}})
+	installTestPolicy(t, policyDocument{Version: 2, DefaultDeny: groupTestBool(true), Policies: []policyConfig{{CallerScope: scopeA, DenyProfiles: []string{"blocked"}}}})
 
 	if response := callIntercept(t, requestInterceptRequest{}); !response.Terminate {
 		t.Fatal("missing caller_scope was allowed while policies exist")
@@ -357,7 +357,7 @@ func TestInterceptorIdentityAndUnconfiguredKeyRules(t *testing.T) {
 		t.Fatal("configured caller_scope with an unavailable profile was allowed")
 	}
 
-	installTestPolicy(t, policyDocument{Version: 2})
+	installTestPolicy(t, policyDocument{Version: 2, DefaultDeny: groupTestBool(true)})
 	if response := callIntercept(t, requestInterceptRequest{Metadata: map[string]any{"selected_auth_id": "anything"}}); !response.Terminate {
 		t.Fatalf("missing caller_scope was allowed with default deny: %#v", response)
 	}
@@ -716,7 +716,7 @@ func TestStatusReportsBuiltinAuthenticationContract(t *testing.T) {
 	for field, want := range map[string]string{
 		"auth_mode":               "cpa_builtin_api_keys",
 		"identity_source":         "Metadata.caller_scope",
-		"unconfigured_key_action": "deny",
+		"unconfigured_key_action": "allow",
 	} {
 		if status[field] != want {
 			t.Errorf("status[%q] = %#v, want %q", field, status[field], want)

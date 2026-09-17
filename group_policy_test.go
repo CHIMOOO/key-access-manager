@@ -29,8 +29,8 @@ func TestGroupMembershipUnionsGrantsAndDenyOverridesAcrossGroups(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !snapshot.AccessControlEnabled || !snapshot.DefaultDeny || !*sanitized.AccessControlEnabled || !*sanitized.DefaultDeny {
-		t.Fatal("secure defaults were not applied")
+	if !snapshot.AccessControlEnabled || snapshot.DefaultDeny || !*sanitized.AccessControlEnabled || *sanitized.DefaultDeny {
+		t.Fatal("access control on / default deny off defaults were not applied")
 	}
 	for profile, allowed := range map[string]bool{"account-a": true, "account-b": true, "shared": false, "account-c": false} {
 		if got := policyAllows(snapshot.ByCallerScope[scopeA], profile); got != allowed {
@@ -91,8 +91,8 @@ func TestV2MigrationPreservesExistingRulesAsStableGroups(t *testing.T) {
 	if !policyAllows(first.ByCallerScope[scopeB], "public") || policyAllows(first.ByCallerScope[scopeB], "private-a") {
 		t.Fatal("migration changed the v2 deny-list policy")
 	}
-	if !first.DefaultDeny {
-		t.Fatal("migration did not deny new unassigned keys")
+	if first.DefaultDeny {
+		t.Fatal("migration unexpectedly denied unassigned keys")
 	}
 	second, _, err := compileDocument(migrated)
 	if err != nil {
@@ -105,16 +105,20 @@ func TestV2MigrationPreservesExistingRulesAsStableGroups(t *testing.T) {
 
 func TestGlobalSwitchAndDefaultDenyEnforcedByAllHooks(t *testing.T) {
 	for _, test := range []struct {
-		name     string
-		document policyDocument
-		scope    string
-		profile  string
-		denied   bool
-		handled  bool
+		name                string
+		document            policyDocument
+		scope               string
+		profile             string
+		denied              bool
+		denyBeforeSelection bool
+		handled             bool
 	}{
-		{name: "new key secure default", document: policyDocument{Version: policyVersion}, scope: scopeB, profile: "account-a", denied: true},
-		{name: "unassigned key optional allow", document: policyDocument{Version: policyVersion, DefaultDeny: groupTestBool(false)}, scope: scopeB, profile: "account-a"},
+		{name: "new key allowed by default", document: policyDocument{Version: policyVersion}, scope: scopeB, profile: "account-a"},
+		{name: "unassigned key explicit allow", document: policyDocument{Version: policyVersion, DefaultDeny: groupTestBool(false)}, scope: scopeB, profile: "account-a"},
+		{name: "unassigned key optional deny", document: policyDocument{Version: policyVersion, DefaultDeny: groupTestBool(true)}, scope: scopeB, profile: "account-a", denied: true, denyBeforeSelection: true},
+		{name: "explicit deny requires identity", document: policyDocument{Version: policyVersion, DefaultDeny: groupTestBool(true)}, profile: "account-a", denied: true, denyBeforeSelection: true},
 		{name: "global disabled no identity", document: policyDocument{Version: policyVersion, AccessControlEnabled: groupTestBool(false)}, profile: "account-a"},
+		{name: "global disabled overrides deny", document: policyDocument{Version: policyVersion, AccessControlEnabled: groupTestBool(false), DefaultDeny: groupTestBool(true)}, scope: scopeB, profile: "account-a"},
 		{name: "membership allowed", document: groupTestDocument(), scope: scopeA, profile: "account-a", handled: true},
 		{name: "membership denied", document: groupTestDocument(), scope: scopeA, profile: "shared", denied: true},
 	} {
@@ -134,7 +138,7 @@ func TestGlobalSwitchAndDefaultDenyEnforcedByAllHooks(t *testing.T) {
 				unwrapEnvelope(t, raw, &response)
 				// Before selection, only unassigned keys are rejected; profile rules
 				// are enforced by the scheduler and the after-auth guard.
-				wantDenied := test.denied && (after || test.name == "new key secure default")
+				wantDenied := test.denied && (after || test.denyBeforeSelection)
 				if response.Terminate != wantDenied {
 					t.Fatalf("after=%v response=%#v", after, response)
 				}
@@ -161,6 +165,71 @@ func TestGlobalSwitchAndDefaultDenyEnforcedByAllHooks(t *testing.T) {
 				if selected.Handled != test.handled {
 					t.Fatalf("unexpected selected=%#v", selected)
 				}
+			}
+		})
+	}
+}
+
+func TestConfigureSwitchDefaultsAndPersistedValues(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		settings    string
+		enabled     bool
+		defaultDeny bool
+	}{
+		{name: "omitted", enabled: true},
+		{name: "explicit enabled and allow", settings: "access_control_enabled: true\ndefault_deny: false\n", enabled: true},
+		{name: "explicit enabled and deny", settings: "access_control_enabled: true\ndefault_deny: true\n", enabled: true, defaultDeny: true},
+		{name: "explicit disabled and deny", settings: "access_control_enabled: false\ndefault_deny: true\n", defaultDeny: true},
+		{name: "explicit disabled and allow", settings: "access_control_enabled: false\ndefault_deny: false\n"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			globalState.clear()
+			t.Cleanup(globalState.clear)
+			configYAML := "version: 3\n" + test.settings + "groups:\n  - id: team\n    name: Team\n    allow_profiles: [account-a]\npolicies:\n  - caller_scope: " + scopeA + "\n    group_ids: [team]\n"
+			request, _ := json.Marshal(lifecycleRequest{SchemaVersion: schemaVersion, ConfigYAML: []byte(configYAML)})
+			if err := configure(request); err != nil {
+				t.Fatal(err)
+			}
+			cfg, snapshot, _, _, _, lastError := globalState.current()
+			if lastError != "" || snapshot.BlockAll || snapshot.AccessControlEnabled != test.enabled || snapshot.DefaultDeny != test.defaultDeny {
+				t.Fatalf("configure did not apply switches: snapshot=%#v, error=%s", snapshot, lastError)
+			}
+			// A saved policy contains both resolved switches, so an upgrade cannot
+			// reinterpret an operator's explicit values using new defaults.
+			path := filepath.Join(t.TempDir(), "policy.toml")
+			if err := writePolicyFile(path, documentFromConfig(cfg)); err != nil {
+				t.Fatal(err)
+			}
+			globalState.clear()
+			request, _ = json.Marshal(lifecycleRequest{SchemaVersion: schemaVersion, ConfigYAML: []byte("policy_file: " + path + "\n")})
+			if err := configure(request); err != nil {
+				t.Fatal(err)
+			}
+			raw, err := managementPolicies()
+			if err != nil {
+				t.Fatal(err)
+			}
+			var response struct {
+				Policy policyDocument `json:"policy"`
+			}
+			if err := json.Unmarshal(decodeManagementResponse(t, raw).Body, &response); err != nil {
+				t.Fatal(err)
+			}
+			if response.Policy.AccessControlEnabled == nil || *response.Policy.AccessControlEnabled != test.enabled || response.Policy.DefaultDeny == nil || *response.Policy.DefaultDeny != test.defaultDeny {
+				t.Fatalf("saved/loaded switches changed: %#v", response.Policy)
+			}
+			// Exercise the RPC dispatch rather than only the policy compiler. With
+			// access control enabled, a group's non-allowed account must be blocked.
+			intercept, _ := json.Marshal(requestInterceptRequest{Metadata: map[string]any{"caller_scope": scopeA, "selected_auth_id": "account-b"}})
+			raw, err = handleMethod(methodRequestInterceptAfter, intercept)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var intercepted requestInterceptResponse
+			unwrapEnvelope(t, raw, &intercepted)
+			if intercepted.Terminate != test.enabled {
+				t.Fatalf("configured access control did not enforce the saved switch: %#v", intercepted)
 			}
 		})
 	}

@@ -49,7 +49,7 @@
     stalePolicies: [],
     groups: [],
     accessControlEnabled: true,
-    defaultDeny: true,
+    defaultDeny: false,
     selectedGroup: "",
     revision: 0,
     selectedIndex: -1,
@@ -65,6 +65,7 @@
     search: "",
     openPicker: "",
     pickerQuery: "",
+    pickerCategory: "codex",
     pickerScroll: 0
   };
 
@@ -76,6 +77,13 @@
   // and deliberately falls back to English instead of the browser's Chinese
   // locale. Chinese remains available for existing installations.
   const ENGLISH_REPLACEMENTS = [
+    ["已开启", "On"],
+    ["已关闭", "Off"],
+    ["上游配置类型", "Provider category"],
+    ["全选筛选结果", "Select filtered"],
+    ["清除筛选项", "Clear filtered"],
+    ["其他", "Other"],
+    ["全部", "All"],
     ["Key 可加入多个权限分组；上游配置只能通过分组授权或排除。", "Keys may join multiple groups. Provider access is allowed or denied only through groups."],
     ["全局设置与访问统计", "Global settings and access counts"],
     ["按组管理 CPA Key 的访问权限", "Group-based access control for CPA keys"],
@@ -1044,8 +1052,8 @@
       ${statusWarning}${runtimeWarning}${staleWarning}
       <section class="card">
         <div class="card-head"><h2>全局设置</h2><p>修改后点击保存修改生效。</p></div>
-        <label class="setting-row"><span class="setting-copy"><strong>启用访问控制</strong><small>关闭后所有已认证 Key 均可访问全部上游配置，分组规则仍会保留。</small></span><input class="setting-switch" type="checkbox" role="switch" data-setting="accessControlEnabled" ${state.accessControlEnabled ? "checked" : ""}></label>
-        <label class="setting-row"><span class="setting-copy"><strong>默认拒绝未分组 Key</strong><small>包含新建 Key 和没有分组的现有 Key；加入分组后按分组规则授权。</small></span><input class="setting-switch" type="checkbox" role="switch" data-setting="defaultDeny" ${state.defaultDeny ? "checked" : ""}></label>
+        ${settingToggle("accessControlEnabled", "启用访问控制", "关闭后所有已认证 Key 均可访问全部上游配置，分组规则仍会保留。")}
+        ${settingToggle("defaultDeny", "默认拒绝未分组 Key", "包含新建 Key 和没有分组的现有 Key；加入分组后按分组规则授权。")}
       </section>
       ${!state.accessControlEnabled ? '<div class="notice">访问控制已关闭：所有已认证 Key 均可访问全部上游配置。</div>' : ""}
       <section class="overview-grid" aria-label="权限统计">
@@ -1066,6 +1074,10 @@
         ${statusRow("策略来源", state.status?.source || "—")}
         ${statusRow("最后更新", formatDate(state.status?.updated_at))}
       </section>`;
+  }
+
+  function settingToggle(name, title, description) {
+    return `<label class="setting-row setting-toggle-row"><span class="setting-copy"><strong>${escapeHTML(title)}</strong><small>${escapeHTML(description)}</small></span><span class="setting-toggle-control"><span class="setting-toggle-state ${state[name] ? "enabled" : ""}" aria-hidden="true">${state[name] ? "已开启" : "已关闭"}</span><span class="setting-toggle"><input class="setting-switch" type="checkbox" role="switch" aria-label="${escapeHTML(title)}" data-setting="${name}" ${state[name] ? "checked" : ""}><span class="setting-track" aria-hidden="true"></span></span></span></label>`;
   }
 
   function statCard(label, value, note, warning = false) {
@@ -1116,8 +1128,9 @@
   function openGroup(id) {
     state.selectedIndex = -1;
     state.selectedGroup = id;
-    state.openPicker = "";
+    state.openPicker = "allow_profiles";
     state.pickerQuery = "";
+    state.pickerCategory = "codex";
     state.pickerScroll = 0;
     renderAll();
   }
@@ -1160,6 +1173,31 @@
     key.hasPolicy = true;
   }
 
+  function profileCategory(profile) {
+    if (profile.kind === "oauth") return "oauth";
+    const provider = String(profile.provider || "").trim().toLowerCase();
+    return provider === "codex" || provider === "xai" ? provider : "other";
+  }
+
+  function profileSearchText(profile) {
+    return `${profile.id || ""} ${profile.provider || ""} ${profile.displayName || ""} ${profile.kind || ""}`.toLowerCase();
+  }
+
+  function profileMatchesPicker(profile, query = state.pickerQuery) {
+    return (state.pickerCategory === "all" || state.pickerCategory === profileCategory(profile))
+      && profileSearchText(profile).includes(query.trim().toLowerCase());
+  }
+
+  function profileCategoryTabs(kind) {
+    const categories = [["codex", "Codex"], ["xai", "xAI"], ["oauth", "OAuth"]];
+    if (state.pickerCategory === "other" || state.profiles.some((profile) => profileCategory(profile) === "other")) categories.push(["other", "其他"]);
+    categories.push(["all", "全部"]);
+    return `<div class="profile-tabs" role="tablist" aria-label="上游配置类型">${categories.map(([id, label]) => {
+      const count = state.profiles.filter((profile) => id === "all" || profileCategory(profile) === id).length;
+      return `<button class="profile-tab" type="button" role="tab" id="${kind}-tab-${id}" aria-controls="${kind}-panel" aria-selected="${state.pickerCategory === id}" tabindex="${state.pickerCategory === id ? 0 : -1}" data-action="filter-profile-category" data-kind="${kind}" data-category="${id}"><span>${label}</span><span class="profile-tab-count">${count}</span></button>`;
+    }).join("")}</div>`;
+  }
+
   function profilePicker(kind, title, description, selectedProfiles, deny) {
     const selected = new Set(selectedProfiles);
     const matchedCount = state.profiles.filter((profile) => selectedProfiles.some((rule) => profileRuleMatches(rule, profile))).length;
@@ -1172,17 +1210,20 @@
       const outsideCatalog = !wildcard && !state.profiles.some((profile) => profileRuleMatches(rule, profile));
       return `<span class="chip ${deny ? "deny" : ""}"><span data-literal>${escapeHTML(rule)}</span>${wildcard ? '<small>通配符</small>' : outsideCatalog ? '<small>目录外</small>' : ""}<button class="chip-remove" type="button" data-action="remove-profile" data-kind="${kind}" data-profile="${escapeHTML(rule)}" aria-label="移除此上游配置规则">${icons.close}</button></span>`;
     }).join("") || '<span class="empty-chips">尚未选择上游配置</span>';
-    const wildcardRow = `<button class="profile-option wildcard-option ${selected.has("*") ? "selected" : ""}" type="button" role="option" aria-selected="${selected.has("*")}" data-action="toggle-profile" data-kind="${kind}" data-profile="*" data-search="全部上游配置 all providers wildcard *"><span class="profile-checkbox" aria-hidden="true">${selected.has("*") ? icons.check : ""}</span><span class="profile-option-copy"><strong>全部上游配置</strong><small>* · 自动包含未来新增上游配置</small></span><span class="profile-badge">通配符</span></button>`;
+    const wildcardSearch = "全部上游配置 all providers wildcard *";
+    const wildcardVisible = state.pickerCategory === "all" && wildcardSearch.includes(state.pickerQuery.trim().toLowerCase());
+    const visibleCount = state.profiles.filter((profile) => profileMatchesPicker(profile)).length;
+    const wildcardRow = `<button class="profile-option wildcard-option ${selected.has("*") ? "selected" : ""}" type="button" role="option" aria-selected="${selected.has("*")}" data-action="toggle-profile" data-kind="${kind}" data-profile="*" data-category="all" data-search="${wildcardSearch}" ${wildcardVisible ? "" : "hidden"}><span class="profile-checkbox" aria-hidden="true">${selected.has("*") ? icons.check : ""}</span><span class="profile-option-copy"><strong>全部上游配置</strong><small>* · 自动包含未来新增上游配置</small></span><span class="profile-badge">通配符</span></button>`;
     const rows = state.profiles.map((profile) => {
       const explicitRule = selected.has(profile.id) ? profile.id : profile.legacyID && selected.has(profile.legacyID) ? profile.legacyID : "";
       const explicit = Boolean(explicitRule);
       const matchedRule = explicit ? "" : selectedProfiles.find((rule) => profileRuleMatches(rule, profile));
       const checked = explicit || Boolean(matchedRule);
-      return `<button class="profile-option ${checked ? "selected" : ""} ${matchedRule ? "derived" : ""}" type="button" role="option" aria-selected="${checked}" ${matchedRule ? 'disabled title="由通配符匹配；移除通配符后可单独选择。"' : ""} data-action="toggle-profile" data-kind="${kind}" data-profile="${escapeHTML(explicitRule || profile.id)}" data-search="${escapeHTML(`${profile.id} ${profile.provider} ${profile.displayName}`.toLowerCase())}"><span class="profile-checkbox" aria-hidden="true">${checked ? icons.check : ""}</span><span class="profile-option-copy"><strong data-literal>${escapeHTML(profile.displayName || profile.id)}</strong><small>${escapeHTML(profile.id)}</small>${matchedRule ? `<small>${escapeHTML(matchedRule)}</small>` : ""}</span><span class="profile-badge">${escapeHTML(profile.kind === "oauth" ? "OAuth" : profile.provider || "API")}</span></button>`;
+      return `<button class="profile-option ${checked ? "selected" : ""} ${matchedRule ? "derived" : ""}" type="button" role="option" aria-selected="${checked}" ${matchedRule ? 'disabled title="由通配符匹配；移除通配符后可单独选择。"' : ""} data-action="toggle-profile" data-kind="${kind}" data-profile="${escapeHTML(explicitRule || profile.id)}" data-category="${profileCategory(profile)}" data-search="${escapeHTML(profileSearchText(profile))}" ${profileMatchesPicker(profile) ? "" : "hidden"}><span class="profile-checkbox" aria-hidden="true">${checked ? icons.check : ""}</span><span class="profile-option-copy"><strong data-literal>${escapeHTML(profile.displayName || profile.id)}</strong><small>${escapeHTML(profile.id)}</small>${matchedRule ? `<small>${escapeHTML(matchedRule)}</small>` : ""}</span><span class="profile-badge">${escapeHTML(profile.kind === "oauth" ? "OAuth" : profile.provider || "API")}</span></button>`;
     }).join("");
     return `<div class="profile-editor ${deny ? "deny" : ""}"><div class="tag-head"><div><strong>${escapeHTML(title)}</strong><span>${escapeHTML(description)}</span></div><span class="selection-count">${selectedProfiles.length} 条规则</span></div>
       <button class="profile-trigger ${isOpen ? "open" : ""}" type="button" data-action="toggle-picker" data-kind="${kind}" aria-expanded="${isOpen}"><span>${escapeHTML(summary)}</span><span class="picker-chevron" aria-hidden="true">⌄</span>${state.profiles.length ? `<progress class="selection-meter" max="${state.profiles.length}" value="${matchedCount}" aria-label="已匹配 ${matchedCount} / ${state.profiles.length} 个上游配置"></progress>` : ""}</button>
-      ${isOpen ? `<div class="profile-panel"><div class="profile-search"><span>${icons.search}</span><input type="search" data-profile-search="${kind}" value="${escapeHTML(state.pickerQuery)}" autocomplete="off" placeholder="搜索上游配置…" aria-label="搜索${escapeHTML(title)}"></div><div class="profile-list" role="listbox" aria-label="${escapeHTML(title)}" aria-multiselectable="true">${wildcardRow}${rows}<p class="profile-empty" hidden>没有匹配的上游配置</p></div><div class="profile-panel-footer"><span>已匹配 ${matchedCount} / ${state.profiles.length}</span><div><button type="button" data-action="select-all-profiles" data-kind="${kind}" ${state.profiles.length ? "" : "disabled"}>全选可用配置</button><button type="button" data-action="clear-profiles" data-kind="${kind}">清空</button></div></div>${state.profilesError ? `<div class="catalog-notice"><span>${escapeHTML(state.profilesError)}</span><button type="button" data-action="refresh-profiles">重新加载</button></div>` : ""}</div>` : ""}
+      ${isOpen ? `<div class="profile-panel">${profileCategoryTabs(kind)}<div id="${kind}-panel" role="tabpanel" aria-labelledby="${kind}-tab-${state.pickerCategory}"><div class="profile-search"><span>${icons.search}</span><input type="search" data-profile-search="${kind}" value="${escapeHTML(state.pickerQuery)}" autocomplete="off" placeholder="搜索上游配置…" aria-label="搜索${escapeHTML(title)}"></div><div class="profile-list" role="listbox" aria-label="${escapeHTML(title)}" aria-multiselectable="true">${wildcardRow}${rows}<p class="profile-empty" ${visibleCount || wildcardVisible ? "hidden" : ""}>没有匹配的上游配置</p></div><div class="profile-panel-footer"><span>已匹配 ${matchedCount} / ${state.profiles.length}</span><div><button type="button" data-action="select-all-profiles" data-kind="${kind}" ${visibleCount ? "" : "disabled"}>全选筛选结果</button><button type="button" data-action="clear-profiles" data-kind="${kind}" ${visibleCount ? "" : "disabled"}>清除筛选项</button></div></div></div>${state.profilesError ? `<div class="catalog-notice"><span>${escapeHTML(state.profilesError)}</span><button type="button" data-action="refresh-profiles">重新加载</button></div>` : ""}</div>` : ""}
       <div class="chips">${chips}</div></div>`;
   }
 
@@ -1235,7 +1276,12 @@
   }
 
   function selectAllProfiles(kind) {
-    updateProfiles(kind, (rules) => [...rules, ...state.profiles.map((profile) => profile.id)]);
+    updateProfiles(kind, (rules) => [...rules, ...state.profiles.filter((profile) => profileMatchesPicker(profile)).map((profile) => profile.id)]);
+  }
+
+  function clearFilteredProfiles(kind) {
+    const ids = new Set(state.profiles.filter((profile) => profileMatchesPicker(profile)).flatMap((profile) => [profile.id, profile.legacyID].filter(Boolean)));
+    updateProfiles(kind, (rules) => rules.filter((rule) => !ids.has(rule)));
   }
 
   function filterProfilePicker(input) {
@@ -1245,12 +1291,15 @@
     if (!panel) return;
     let visible = 0;
     panel.querySelectorAll(".profile-option").forEach((option) => {
-      const matches = !query || option.dataset.search.includes(query);
+      const matches = (state.pickerCategory === "all" || option.dataset.category === state.pickerCategory)
+        && option.dataset.search.includes(query);
       option.hidden = !matches;
       if (matches) visible += 1;
     });
     const empty = panel.querySelector(".profile-empty");
     if (empty) empty.hidden = visible > 0;
+    const hasProfiles = state.profiles.some((profile) => profileMatchesPicker(profile));
+    panel.querySelectorAll('[data-action="select-all-profiles"], [data-action="clear-profiles"]').forEach((button) => { button.disabled = !hasProfiles; });
   }
 
   function setProfileBusy(busy) {
@@ -1558,9 +1607,16 @@
     } else if (action === "toggle-picker" && validProfileKind(kind)) {
       const opening = state.openPicker !== kind;
       state.openPicker = opening ? kind : "";
-      if (opening) { state.pickerQuery = ""; state.pickerScroll = 0; }
+      if (opening) { state.pickerQuery = ""; state.pickerCategory = "codex"; state.pickerScroll = 0; }
       renderEditor();
       if (opening) restorePickerView(kind, true);
+    } else if (action === "filter-profile-category" && validProfileKind(kind)) {
+      const category = target.dataset.category;
+      if (!["codex", "xai", "oauth", "other", "all"].includes(category)) return;
+      state.pickerCategory = category;
+      state.pickerScroll = 0;
+      renderEditor();
+      editor.querySelector(`[data-kind="${kind}"][data-category="${category}"][role="tab"]`)?.focus({ preventScroll: true });
     } else if (action === "toggle-profile") {
       toggleProfileRule(kind, target.dataset.profile, target.dataset.derived === "true");
     } else if (action === "remove-profile") {
@@ -1568,10 +1624,24 @@
     } else if (action === "select-all-profiles") {
       selectAllProfiles(kind);
     } else if (action === "clear-profiles") {
-      updateProfiles(kind, () => []);
+      clearFilteredProfiles(kind);
     } else if (action === "refresh-profiles") {
       refreshProfileCatalog().catch((error) => showToast(error.message, "error"));
     }
+  });
+
+  editor.addEventListener("keydown", (event) => {
+    if (!event.target.matches('[role="tab"]')) return;
+    const tabs = [...event.target.closest('[role="tablist"]').querySelectorAll('[role="tab"]')];
+    const index = tabs.indexOf(event.target);
+    let next;
+    if (event.key === "ArrowRight") next = (index + 1) % tabs.length;
+    else if (event.key === "ArrowLeft") next = (index - 1 + tabs.length) % tabs.length;
+    else if (event.key === "Home") next = 0;
+    else if (event.key === "End") next = tabs.length - 1;
+    else return;
+    event.preventDefault();
+    tabs[next].click();
   });
 
   editor.addEventListener("change", (event) => {

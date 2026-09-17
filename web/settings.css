@@ -470,6 +470,12 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 }
 @starting-style { .profile-panel { opacity: 0; transform: scale(0.98); } }
 .profile-search { position: relative; display: flex; align-items: center; padding: 0.5rem; border-bottom: 1px solid var(--border); }
+.profile-tabs { display: flex; align-items: center; gap: .35rem; padding: .6rem .6rem .5rem; overflow-x: auto; border-bottom: 1px solid var(--border); background: var(--surface-raised); }
+.profile-tab { display: inline-flex; align-items: center; justify-content: center; gap: .45rem; flex: 0 0 auto; min-height: 2rem; padding: .3rem .7rem; border: 1px solid transparent; border-radius: .5rem; color: var(--text-secondary); background: transparent; font-size: .75rem; font-weight: 550; cursor: pointer; transition: background 150ms, color 150ms; }
+.profile-tab:hover { background: var(--surface-subtle); color: var(--text); }
+.profile-tab[aria-selected="true"] { color: var(--text); border-color: var(--border-strong); background: var(--surface-selected); }
+.profile-tab-count { display: inline-grid; place-items: center; min-width: 1.2rem; padding: .05rem .3rem; border-radius: .3rem; background: var(--surface-subtle); color: var(--text-secondary); font-size: .65rem; font-variant-numeric: tabular-nums; }
+.profile-tab:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .profile-search > span { position: absolute; left: 1.05rem; color: var(--text-tertiary); pointer-events: none; }
 .profile-search svg { width: 0.85rem; height: 0.85rem; }
 .profile-search input { min-height: 2.15rem; padding: 0.4rem 0.65rem 0.4rem 2rem; background: var(--surface-raised); font-size: 0.72rem; }
@@ -618,11 +624,23 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .membership-note { color: var(--text-secondary); padding: 0 1.15rem .85rem; font-size: .75rem; }
 .effective-profiles { display: flex; flex-wrap: wrap; gap: .5rem; padding: 1.15rem; }
 .setting-copy small { display: block; margin-top: .3rem; color: var(--text-secondary); font-size: .73rem; }
-.setting-switch { appearance: none; position: relative; width: 2.6rem; height: 1.5rem; min-width: 2.6rem; border: 1px solid var(--border-strong); border-radius: 2rem; background: var(--surface-subtle); cursor: pointer; transition: background 150ms; }
-.setting-switch::before { content: ""; position: absolute; top: .15rem; left: .15rem; height: 1.05rem; width: 1.05rem; border-radius: 50%; background: var(--text-tertiary); transition: transform 150ms; }
-.setting-switch:checked { background: var(--text); border-color: var(--text); }
-.setting-switch:checked::before { background: var(--bg); transform: translateX(1.05rem); }
-.setting-switch:focus-visible, .membership-option input:focus-visible, .nav-add:focus-visible { outline: 2px solid var(--text); outline-offset: 3px; }
+.setting-toggle-row { cursor: pointer; }
+.setting-toggle-row .setting-copy { min-width: 0; }
+.setting-toggle-control { display: flex; align-items: center; gap: .75rem; flex: 0 0 auto; }
+.setting-toggle-state { color: var(--text-secondary); font-size: .72rem; white-space: nowrap; }
+.setting-toggle-state.enabled { color: #23826e; }
+:root[data-theme="dark"] .setting-toggle-state.enabled { color: #6fd5b4; }
+.setting-toggle { display: inline-flex; align-items: center; position: relative; width: 2.5rem; height: 2rem; flex: 0 0 2.5rem; }
+/* Keep native checkbox semantics; the track is isolated from text-input styles. */
+.setting-switch { position: absolute; inset: 0; z-index: 1; width: 100%; height: 100%; min-width: 0; min-height: 0; margin: 0; padding: 0; opacity: 0; cursor: pointer; }
+.setting-track { width: 2.5rem; height: 1.5rem; position: relative; border-radius: 999px; background: #a6a5a1; box-shadow: inset 0 0 0 1px rgba(0, 0, 0, .06); transition: background 160ms; pointer-events: none; }
+.setting-track::before { content: ""; position: absolute; top: .1875rem; left: .1875rem; height: 1.125rem; width: 1.125rem; border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgba(0, 0, 0, .18); transition: transform 160ms; }
+.setting-switch:checked + .setting-track { background: #23826e; }
+.setting-switch:checked + .setting-track::before { transform: translateX(1rem); }
+.setting-switch:focus-visible + .setting-track { outline: 2px solid var(--text); outline-offset: 3px; }
+.setting-switch:disabled + .setting-track { opacity: .5; }
+.setting-switch:disabled { cursor: wait; }
+.membership-option input:focus-visible, .nav-add:focus-visible { outline: 2px solid var(--text); outline-offset: 3px; }
 .danger-button { color: var(--danger); }
 @media (max-width: 600px) {
   .group-actions { flex-wrap: wrap; }

@@ -11,7 +11,9 @@ CLIProxyAPI 分组权限管理插件：Key 可加入多个组，只能通过分�
 3. 为一个 Key 勾选多个分组，或在分组中批量选择成员 Key。
 4. 点击**保存修改**。组规则、成员关系和全局开关一起保存。
 
-全局**权限控制**默认开启。关闭它会暂停插件权限限制，CPA 自身的 API Key 认证仍然生效。**未分组 Key 默认拒绝**也默认开启，新建 Key 在加入授权组之前不能使用任何上游；关闭该选项后，未分组 Key 可使用 CPA 提供的上游。
+上游选择器按 **Codex → xAI → OAuth** 展示筛选标签，默认显示 Codex API 配置；OAuth 账号统一位于 OAuth 标签中。其他供应商可在“其他”或“全部”中查看。搜索与分类同时生效，“全选筛选结果”和“清除筛选项”只操作当前筛选范围，不改动其他分类或通配符规则；`*` 在“全部”标签中单独选择。
+
+**启用访问控制**默认开启。关闭它会暂停插件权限限制，CPA 自身的 API Key 认证仍然生效。**默认拒绝未分组 Key**默认关闭，未分组 Key 可使用 CPA 提供的上游；手动开启并保存后，新建 Key 和没有分组的现有 Key 在加入授权组之前不能使用任何上游。已保存的开关值在升级或刷新后保留。
 
 同一个 Key 所有分组的允许列表取合集，任何组的拒绝规则优先。已分组但所有组的允许列表为空时，不授予访问权限。需要允许所有上游时，在组中明确选择 `*`。删除分组会解除相关成员关系，剩余组继续生效；完全未分组的 Key 由默认拒绝开关决定。
 
@@ -24,7 +26,7 @@ CLIProxyAPI 分组权限管理插件：Key 可加入多个组，只能通过分�
 - Allow lists are combined across groups; any matching deny rule wins.
 - Empty group allow lists grant nothing. Use `*` for an explicit allow-all group; `?` matches one character.
 - `access_control_enabled` defaults to `true`. Setting it to `false` bypasses plugin authorization and scheduling without disabling CPA authentication or erasing policies.
-- `default_deny` defaults to `true` and applies to keys with no group memberships, including new keys. Setting it to `false` allows unassigned keys; assigned keys still follow their groups.
+- `default_deny` defaults to `false`, allowing keys with no group memberships, including new keys. Setting it to `true` denies unassigned keys; assigned keys still follow their groups. Explicitly saved switch values are preserved on upgrade and reload.
 - Missing/invalid caller identity fails closed when default-deny or assigned group policies require evaluation. Invalid initial policy state blocks access; an invalid reload preserves the last valid snapshot and reports the error.
 - No matching allowed profile means denial. The plugin never adopts unrelated candidates when profile IDs change. Verified legacy API-key ID matching is retained for the same key/base URL.
 - Scheduler and after-auth enforcement use the same group policy. Denied candidates never reach an upstream executor.
@@ -45,7 +47,7 @@ plugins:
       priority: 100
       version: 3
       access_control_enabled: true
-      default_deny: true
+      default_deny: false
       groups: []
       policies: []
 ```
@@ -65,7 +67,7 @@ On first use the page creates `plugins/key-provider-access/config.toml` and patc
 ```toml
 version = 3
 access_control_enabled = true
-default_deny = true
+default_deny = false
 
 [[groups]]
 id = "developers"
@@ -90,7 +92,7 @@ Use the UI to derive caller scopes and choose actual profile IDs. Group IDs must
 
 Existing v2 inline/file policies are accepted and converted into deterministic per-key groups on load. Existing allow/deny ranges are preserved; legacy empty allow lists become explicit `*` group grants. The management API and UI return v3, and the next save persists it. New API writes must use v3.
 
-**Behavior change:** previously unconfigured keys were allowed by default. After migration they are denied by default; assign groups or explicitly disable `default_deny` if that is intended. Strict unmatched-profile denial also replaces the old automatic adoption behavior. Back up the old plugin binary and policy file before upgrading. Returning to the old plugin requires restoring its v2 file.
+Unconfigured keys remain allowed unless `default_deny` is explicitly enabled. Strict unmatched-profile denial replaces the old automatic adoption behavior. Back up the old plugin binary and policy file before upgrading. Returning to the old plugin requires restoring its v2 file.
 
 ## Build and verification
 

@@ -383,7 +383,7 @@ func compileDocument(document policyDocument) (policySnapshot, policyDocument, e
 		}
 	}
 	enabled := boolValue(document.AccessControlEnabled, true)
-	defaultDeny := boolValue(document.DefaultDeny, true)
+	defaultDeny := boolValue(document.DefaultDeny, false)
 	document.AccessControlEnabled = &enabled
 	document.DefaultDeny = &defaultDeny
 	groups := make(map[string]groupConfig, len(document.Groups))
